@@ -1,0 +1,32 @@
+name: Daily Aera Data Pipeline
+
+on:
+  schedule:
+    # 9:30am PKT (UTC+5) = 4:30am UTC
+    - cron: '30 4 * * *'
+  workflow_dispatch:  # allow manual trigger from GitHub UI
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300  # 5-hour cap (pipeline takes ~2.5 hrs)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline
+        env:
+          AERA_USERNAME: ${{ secrets.AERA_USERNAME }}
+          AERA_PASSWORD: ${{ secrets.AERA_PASSWORD }}
+          GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
+        run: python run_daily_pipeline.py

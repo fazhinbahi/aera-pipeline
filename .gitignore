@@ -1,0 +1,44 @@
+# Secrets — never commit
+.env
+.aera_token.json
+
+# Data files (fetched fresh by pipeline)
+*.parquet
+*.csv
+*.xlsx
+*.pdf
+*.docx
+*.html
+
+# Network debug captures
+*.network-response
+*.network-request
+
+# Checkpoint directories
+*_checkpoints/
+*_live_checkpoints/
+
+# Logs
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# Large JSON data files
+customer_names.json
+forecast_accuracy_full.json
+all_dimensions.json
+all_measures.json
+folders_root.json
+tree_root.json
+forecast_adjustments_params_all_requests.json
+
+# Misc snapshots
+snapshot.txt
+home_snapshot.txt
+snapshot_order_hist.txt
+fa_inner.html
+initial_state.json
