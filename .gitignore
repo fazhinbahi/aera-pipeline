@@ -4,6 +4,8 @@
 
 # Data files (fetched fresh by pipeline)
 *.parquet
+# Keep forecast_3yr_full.parquet — needed by SF fetch for pairs + sub-segment proportions
+!forecast_3yr_full.parquet
 *.csv
 *.xlsx
 *.pdf
