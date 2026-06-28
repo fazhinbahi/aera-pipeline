@@ -219,7 +219,11 @@ def main():
     ea = f3yr[
         f3yr["Region"].isin(["EMEA", "APAC"]) &
         f3yr["Month Year"].isin(ALL_MONTHS) &
-        (f3yr["Statistical Forecast Quantity"] > 0)
+        (
+            (f3yr["Statistical Forecast Quantity"] > 0) |
+            (f3yr["3PD Forecast"] > 0) |
+            (f3yr["Source Forecast"] > 0)
+        )
     ]
 
     pairs = (ea[["Material Number", "Country Name"]]
