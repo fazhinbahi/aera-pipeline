@@ -74,6 +74,10 @@ COUNTRY_CODES = {
     "Spain":"ES","Sri Lanka":"LK","Sweden":"SE","Switzerland":"CH",
     "Taiwan":"TW","Thailand":"TH","Tunisia":"TN","Turkey":"TR",
     "United Arab Emirates":"AE","United Kingdom":"GB","Vietnam":"VN",
+    # Aera-specific country name variants
+    "Utd.Arab Emir.":"AE","Türkiye":"TR","Republic Serbia":"RS",
+    "Moldavia":"MD","Russian Fed.":"RU","South Korea":"KR","Vanuatu":"VU",
+    "Ukraine":"UA",
 }
 
 OUT_FILE        = os.path.join(DIR, "sf_9lc_grain.parquet")
