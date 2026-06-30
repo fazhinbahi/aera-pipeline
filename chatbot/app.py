@@ -151,7 +151,7 @@ if not st.session_state.chat_display:
     with st.chat_message("assistant"):
         st.markdown(
             "## Hi, I'm the Aera Demand Planning Bot 👋\n\n"
-            "I'm connected to your live BigQuery data and can help you analyse "
+            "I'm connected to your live demand planning data and can help you analyse "
             "forecast performance, customer trends, and market insights across "
             "**EMEA** and **APAC** in real time.\n\n"
             "**Here's what I can do:**\n\n"
