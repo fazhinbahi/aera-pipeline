@@ -201,26 +201,47 @@ def _gpt(prompt: str, client: OpenAI) -> str:
 
 # ── Accuracy bar chart ────────────────────────────────────────────────────────
 def _accuracy_chart(monthly_stats: list[dict]) -> io.BytesIO:
-    months = [d['month'] for d in monthly_stats]
-    wmapes = [d['wMAPE'] for d in monthly_stats]
-    biases = [d['Bias']  for d in monthly_stats]
+    months = [d['month']   for d in monthly_stats]
+    acts   = [d['Actuals'] for d in monthly_stats]
+    lag3s  = [d['Lag3FC']  for d in monthly_stats]
+    wmapes = [d['wMAPE']   for d in monthly_stats]
+    biases = [d['Bias']    for d in monthly_stats]
 
     x = np.arange(len(months))
     w = 0.35
 
-    fig, ax = plt.subplots(figsize=(6.5, 2.8))
-    ax.bar(x - w/2, wmapes, w, label='wMAPE %', color='#1B2B4B', alpha=0.85)
-    ax.bar(x + w/2, biases, w, label='Bias %',  color='#90B4D4', alpha=0.9)
-    ax.axhline(17.12, color='#E05252', linewidth=1.2, linestyle='--', label='Target 17.12%')
-    ax.axhline(0,     color='#AAAAAA', linewidth=0.5)
-    ax.set_xticks(x)
-    ax.set_xticklabels(months, fontsize=8)
-    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.0f%%'))
-    ax.tick_params(labelsize=8)
-    ax.legend(fontsize=8, framealpha=0.7)
-    ax.set_title('Lag-3 Forecast Accuracy — 2026 YTD', fontsize=9,
-                 fontweight='bold', color='#1B2B4B', pad=8)
-    ax.spines[['top', 'right']].set_visible(False)
+    fig, ax1 = plt.subplots(figsize=(6.5, 3.2))
+
+    # Left axis — volume bars
+    ax1.bar(x - w/2, acts,  w, label='Actuals (9LC)',    color='#1B2B4B', alpha=0.88)
+    ax1.bar(x + w/2, lag3s, w, label='Lag-3 Fcst (9LC)', color='#90B4D4', alpha=0.90)
+    ax1.set_ylabel('Volume (9LC)', fontsize=8, color='#333333')
+    ax1.tick_params(axis='y', labelsize=8)
+    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    ax1.spines[['top']].set_visible(False)
+
+    # Right axis — wMAPE and Bias dotted lines
+    ax2 = ax1.twinx()
+    ax2.plot(x, wmapes, color='#E05252', linewidth=1.8, linestyle='--',
+             marker='o', markersize=5, label='wMAPE %')
+    ax2.plot(x, biases, color='#F5A623', linewidth=1.8, linestyle=':',
+             marker='s', markersize=5, label='Bias %')
+    ax2.axhline(0, color='#AAAAAA', linewidth=0.5)
+    ax2.set_ylabel('wMAPE / Bias %', fontsize=8, color='#333333')
+    ax2.tick_params(axis='y', labelsize=8)
+    ax2.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.0f%%'))
+    ax2.spines[['top']].set_visible(False)
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(months, fontsize=8)
+
+    # Combined legend
+    h1, l1 = ax1.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax1.legend(h1 + h2, l1 + l2, fontsize=8, framealpha=0.8, loc='upper right')
+
+    ax1.set_title('Lag-3 Forecast Accuracy — 2026 YTD', fontsize=9,
+                  fontweight='bold', color='#1B2B4B', pad=8)
     fig.tight_layout(pad=0.8)
 
     buf = io.BytesIO()
@@ -553,17 +574,20 @@ def build_prework_pdf(
             if sub.empty:
                 continue
             tot_act  = sub[act_c].sum()
+            tot_fc   = sub[fc_c].sum()
             tot_err  = (sub[fc_c] - sub[act_c]).abs().sum()
             tot_bias = (sub[fc_c] - sub[act_c]).sum()
             monthly_stats.append({
-                'month': m,
-                'wMAPE': round(tot_err  / tot_act * 100, 1),
-                'Bias':  round(tot_bias / tot_act * 100, 1),
+                'month':   m,
+                'Actuals': round(tot_act),
+                'Lag3FC':  round(tot_fc),
+                'wMAPE':   round(tot_err  / tot_act * 100, 1),
+                'Bias':    round(tot_bias / tot_act * 100, 1),
             })
 
     if monthly_stats:
         chart_buf = _accuracy_chart(monthly_stats)
-        chart_h   = W * 2.8 / 6.5   # maintain aspect ratio of the matplotlib figure
+        chart_h   = W * 3.2 / 6.5   # updated aspect ratio for taller chart
         story.append(Image(chart_buf, width=W, height=chart_h))
         story.append(sp(8))
 
