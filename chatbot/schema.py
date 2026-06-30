@@ -135,6 +135,15 @@ Always use the correct year columns — never compare 2026 forecasts against 202
     APAC: 'APAC ENTERP', 'APAC DEVELOP', 'APAC GTR', 'APAC IMC'
   If the user says "EMEA ENTRP" or "EMEA Enterprise", map it to 'EMEA ENTERP'.
   If the user says "EMEA Develop", map to 'EMEA DEVELOP'. And so on.
+  CRITICAL — region inference from country: if the user names a country without
+  specifying EMEA/APAC, determine the region from the country:
+    APAC countries → use APAC sub-segments: Australia, New Zealand, Japan,
+      China, South Korea, Singapore, Hong Kong, Taiwan, Thailand, Indonesia,
+      Philippines, Vietnam, India, Malaysia, Cambodia, Myanmar.
+    All other countries (Europe, Middle East, Africa, Central Asia) → EMEA sub-segments.
+  Example: "IMC Australia" → Sub_Segments = 'APAC IMC', Country_Name = 'Australia'
+           "ENTERP Japan"  → Sub_Segments = 'APAC ENTERP', Country_Name = 'Japan'
+           "IMC UAE"       → Sub_Segments = 'EMEA IMC', Country_Name = 'Utd.Arab Emir.'
 - For percentage/deviation columns stored as strings, cast with SAFE_CAST(col AS FLOAT64).
 - JOIN between tables on Material_Number + Country_Name (+ Sub_Segments where available).
 - CRITICAL: ALWAYS wrap every volume column in SUM() when the user asks for a market, country,
