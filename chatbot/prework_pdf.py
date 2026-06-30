@@ -383,6 +383,24 @@ def build_prework_pdf(
         )
         story += dtbl(fc_hdrs, fc_rows, cw_mo)
 
+        # Monthly SO table
+        story.append(Paragraph('Confirmed Sales Orders (SO) by Sub-Brand', ST['sub']))
+        so_hdrs = ['Sub-Brand'] + open_ms_avail + ['H2 Total']
+        so_rows = []
+        for _, r in grp.iterrows():
+            row = [r['Sub_Brand_Description']]
+            for m in open_ms_avail:
+                row.append(_fmt(_col_sum(r.to_frame().T, f"SO_{m}_2026")))
+            row.append(_fmt(r['_SO_Total']))
+            so_rows.append(row)
+        so_rows.append(
+            ['TOTAL'] +
+            [_fmt(grp[f"SO_{m}_2026"].sum() if f"SO_{m}_2026" in grp.columns else 0)
+             for m in open_ms_avail] +
+            [_fmt(grp['_SO_Total'].sum())]
+        )
+        story += dtbl(so_hdrs, so_rows, cw_mo)
+
         # SO vs AdjFC summary table
         story.append(Paragraph('SO vs AdjFC — Coverage Summary', ST['sub']))
         sum_hdrs = ['Sub-Brand', 'AdjFC H2 Total', 'SO Total', 'Delta (SO−AdjFC)', 'Coverage %']
