@@ -470,7 +470,7 @@ def build_prework_pdf(
         grp = ca.groupby("Sub_Brand_Description")[so_cols + fc_cols].sum().reset_index()
         grp = grp[(grp[so_cols].sum(axis=1) > 0) | (grp[fc_cols].sum(axis=1) > 0)]
         grp["_FC_Total"] = grp[fc_cols].sum(axis=1)
-        grp = grp.sort_values("_FC_Total", ascending=False).head(20)
+        grp = grp.sort_values("_FC_Total", ascending=False).head(10)
         grp["_SO_Total"] = grp[so_cols].sum(axis=1) if so_cols else 0
         grp["_Delta"]    = grp["_SO_Total"] - grp["_FC_Total"]
 
@@ -495,10 +495,13 @@ def build_prework_pdf(
              for m in open_ms_avail] +
             [_fmt(grp['_FC_Total'].sum())]
         )
-        story += dtbl(fc_hdrs, fc_rows, cw_mo)
+        story += dtbl(fc_hdrs, fc_rows, cw_mo, font_size=8.0)
 
         # Monthly SO table
         story.append(Paragraph('Confirmed Sales Orders (SO) by Sub-Brand', ST['sub']))
+        story.append(Paragraph(
+            'Booked customer orders already in the system. Zeros indicate no orders placed yet for that month.',
+            ST['source']))
         so_hdrs = ['Sub-Brand'] + open_ms_avail + ['H2 Total']
         so_rows = []
         for _, r in grp.iterrows():
@@ -513,7 +516,7 @@ def build_prework_pdf(
              for m in open_ms_avail] +
             [_fmt(grp['_SO_Total'].sum())]
         )
-        story += dtbl(so_hdrs, so_rows, cw_mo)
+        story += dtbl(so_hdrs, so_rows, cw_mo, font_size=8.0)
 
         # SO vs AdjFC summary table
         story.append(Paragraph('SO vs AdjFC — Coverage Summary', ST['sub']))
