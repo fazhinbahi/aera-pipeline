@@ -22,17 +22,25 @@ Dimension columns:
   Sales_Organisation, Category_Grouper_Description_Z_
 
 Metric columns (all volumes in 9LC):
-  • Actuals monthly    : Jan_2024 → May_2026
-  • Adj Forecast (AdjFC): Jun_2026 → Dec_2026
-  • SO (Sales Orders)  : SO___Jun_2026 → SO___Dec_2026
+  IMPORTANT — column naming: there is ONE set of monthly columns (Jan_2026, Feb_2026, …, Dec_2026).
+  These serve DUAL purpose depending on whether the month is closed or open:
+    • Jan_2026 → May_2026  = Actuals (closed months, real sales)
+    • Jun_2026 → Dec_2026  = Adj Forecast / AdjFC (open months, adjusted plan)
+  There are NO columns named AdjFC_Jun_2026 or similar — the month column IS the AdjFC.
+  Do NOT show Actuals and AdjFC side by side for the same month — they are the same column.
+  Correct approach for "show actuals vs AdjFC":
+    - Actuals row  → SUM(Jan_2026) … SUM(May_2026), then NULL for Jun–Dec
+    - AdjFC row    → NULL for Jan–May, then SUM(Jun_2026) … SUM(Dec_2026)
+
+  • 2024 actuals        : Jan_2024 → Dec_2024  (col_2024_Total for annual)
+  • 2025 actuals        : Jan_2025 → Dec_2025  (col_2025_Total for annual)
+  • 2026 (dual-purpose): Jan_2026 → Dec_2026  (col_2026_Total for annual)
+  • SO (Sales Orders)  : SO_Jun_2026 → SO_Dec_2026
   • PMCF forecast      : PMCF_Jan_2026 → PMCF_Dec_2026
-  • 2027 forecast      : Jan_2027 → Dec_2027
-  • Annual totals      : col_2024_Total, col_2025_Total, col_2026_Total, col_2027_Total
-  • YTD               : YTD_2025, YTD_2026, YTD_SPLY_ (YoY %)
-  • Deviation %        : Dev__Jun_2026 → Dev__Dec_2026, Q1_Dev_, Q2_Dev_, Q3_Dev_, Q4_Dev_
-  • Forecast vs avg    : FC_vs_Last_6M_Avg, FC_vs_SPLY_
-  • MAPE accuracy      : MAPE_Jun_2025 → MAPE_May_2026, MAPE_Total
-  • Grain_Count        : number of underlying SKU rows at this grain
+  • 2027 forecast      : Jan_2027 → Dec_2027  (col_2027_Total for annual)
+  • YTD               : YTD_2025, YTD_2026, YTD_SPLY (YoY %)
+  • Deviation %        : Dev_Jun_2026 → Dev_Dec_2026, Q1_Dev, Q2_Dev, Q3_Dev, Q4_Dev
+  • Forecast vs avg    : FC_vs_Last_6M_Avg, FC_vs_SPLY
 
 Note: BQ column names are sanitised (spaces→_, special chars removed, leading
 digits prefixed with col_). Use get_schema to get exact column names before writing SQL.
