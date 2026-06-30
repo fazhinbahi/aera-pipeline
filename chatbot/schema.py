@@ -19,28 +19,28 @@ Dimension columns:
   Customer_Number, Customer_Name, Material_Number, Country_Name,
   Sub_Segments, Brand_Family, Sub_Brand_Description, Region,
   Business_Segment, Material_Long_Description, Volume, UPC_Code,
-  Sales_Organisation, Category_Grouper_Description_Z_
+  Sales_Organisation, Category_Grouper_Description_Z
 
 Metric columns (all volumes in 9LC):
-  IMPORTANT — column naming: there is ONE set of monthly columns (Jan_2026, Feb_2026, …, Dec_2026).
-  These serve DUAL purpose depending on whether the month is closed or open:
-    • Jan_2026 → May_2026  = Actuals (closed months, real sales)
-    • Jun_2026 → Dec_2026  = Adj Forecast / AdjFC (open months, adjusted plan)
-  There are NO columns named AdjFC_Jun_2026 or similar — the month column IS the AdjFC.
-  Do NOT show Actuals and AdjFC side by side for the same month — they are the same column.
-  Correct approach for "show actuals vs AdjFC":
-    - Actuals row  → SUM(Jan_2026) … SUM(May_2026), then NULL for Jun–Dec
-    - AdjFC row    → NULL for Jan–May, then SUM(Jun_2026) … SUM(Dec_2026)
+  Column naming convention — prefix tells you exactly what the column means:
+    Actual_*   = confirmed historical sales (order history)
+    AdjFC_*    = Adjusted Forecast (human-adjusted plan for open months)
+    YoY_Dev_*  = % deviation of AdjFC vs same month in prior year
+    PMCF_*     = Previous Month Consensus Forecast (last month's AdjFC, for comparison)
+    SO_*       = Sales Orders (open orders for forecast months)
 
-  • 2024 actuals        : Jan_2024 → Dec_2024  (col_2024_Total for annual)
-  • 2025 actuals        : Jan_2025 → Dec_2025  (col_2025_Total for annual)
-  • 2026 (dual-purpose): Jan_2026 → Dec_2026  (col_2026_Total for annual)
-  • SO (Sales Orders)  : SO_Jun_2026 → SO_Dec_2026
-  • PMCF forecast      : PMCF_Jan_2026 → PMCF_Dec_2026
-  • 2027 forecast      : Jan_2027 → Dec_2027  (col_2027_Total for annual)
-  • YTD               : YTD_2025, YTD_2026, YTD_SPLY (YoY %)
-  • Deviation %        : Dev_Jun_2026 → Dev_Dec_2026, Q1_Dev, Q2_Dev, Q3_Dev, Q4_Dev
-  • Forecast vs avg    : FC_vs_Last_6M_Avg, FC_vs_SPLY
+  • 2024 actuals     : Actual_Jan_2024 → Actual_Dec_2024  (Actual_Total_2024 for annual)
+  • 2025 actuals     : Actual_Jan_2025 → Actual_Dec_2025  (Actual_Total_2025 for annual)
+  • 2026 actuals     : Actual_Jan_2026 → Actual_May_2026  (closed months only)
+  • 2026 AdjFC       : AdjFC_Jun_2026 → AdjFC_Dec_2026   (open/forecast months)
+  • 2026 annual      : Total_2026  (actuals Jan–May + AdjFC Jun–Dec combined)
+  • 2027 AdjFC       : AdjFC_Jan_2027 → AdjFC_Dec_2027  (AdjFC_Total_2027 for annual)
+  • Sales Orders     : SO_Jun_2026 → SO_Dec_2026
+  • PMCF             : PMCF_Jan_2026 → PMCF_Dec_2026
+  • YTD              : YTD_2025, YTD_2026, YTD_YoY_Pct (YoY % change), FC_vs_SPLY
+  • Monthly dev %    : YoY_Dev_Jun_2026 → YoY_Dev_Dec_2026
+  • Quarterly dev %  : YoY_Dev_Q1, YoY_Dev_Q2, YoY_Dev_Q3, YoY_Dev_Q4
+  • vs avg           : FC_vs_Last_6M_Avg
 
 Note: BQ column names are sanitised (spaces→_, special chars removed, leading
 digits prefixed with col_). Use get_schema to get exact column names before writing SQL.
@@ -57,9 +57,14 @@ Dimension columns:
   Material_Number, Country_Name, Sub_Segments
 
 Metric columns (all volumes in 9LC):
-  • Statistical Forecast (SF)  : SF_Jan_2026 → SF_Dec_2027  (24 cols)
-  • 3PD Forecast               : col_3PD_Jan_2026 → col_3PD_Dec_2027  (24 cols)
-  • Source Forecast            : SrcFC_Jan_2026 → SrcFC_Dec_2027  (24 cols)
+  Column naming convention:
+    SF_*      = Statistical Forecast (model-generated, no human adjustment)
+    ThreePD_* = 3PD Forecast (third-party distributor forecast)
+    SrcFC_*   = Source Forecast (the final input into IBP, post-adjustment)
+
+  • Statistical Forecast : SF_Jan_2026 → SF_Dec_2027      (24 cols)
+  • 3PD Forecast         : ThreePD_Jan_2026 → ThreePD_Dec_2027  (24 cols)
+  • Source Forecast      : SrcFC_Jan_2026 → SrcFC_Dec_2027      (24 cols)
 
 ─────────────────────────────────────────────────────────────────
 TABLE 3: lag1_data
@@ -73,17 +78,22 @@ Dimension columns:
   Material_Number, Country_Name, Customer_Number
 
 Metric columns:
-  • Lag1_Jan_2026 = forecast made in Dec 2025 for Jan 2026 (1 month prior)
-  • Lag1_Feb_2026 = forecast made in Jan 2026 for Feb 2026 (1 month prior)
-  • Lag1_Mar_2026 = forecast made in Feb 2026 for Mar 2026 (1 month prior)
-  • Lag1_Apr_2026 = forecast made in Mar 2026 for Apr 2026 (1 month prior)
-  • Lag1_May_2026 = forecast made in Apr 2026 for May 2026 (1 month prior)
-  • Lag3_Jan_2026 = forecast made in Oct 2025 for Jan 2026 (3 months prior)
-  • Lag3_Feb_2026 = forecast made in Nov 2025 for Feb 2026 (3 months prior)
-  • Lag3_Mar_2026 = forecast made in Dec 2025 for Mar 2026 (3 months prior)
-  • Lag3_Apr_2026 = forecast made in Jan 2026 for Apr 2026 (3 months prior)
-  • Lag3_May_2026 = forecast made in Feb 2026 for May 2026 (3 months prior)
-  • Actual_Jan_2026 → Actual_May_2026  (actuals recorded in lag1_data for convenience)
+  Column naming convention:
+    Fcst1M_*  = forecast made exactly 1 month before the period (Lag-1)
+    Fcst3M_*  = forecast made exactly 3 months before the period (Lag-3)
+    Actual_*  = confirmed actual sales for that month
+
+  • Fcst1M_Jan_2026 = forecast made in Dec 2025 for Jan 2026
+  • Fcst1M_Feb_2026 = forecast made in Jan 2026 for Feb 2026
+  • Fcst1M_Mar_2026 = forecast made in Feb 2026 for Mar 2026
+  • Fcst1M_Apr_2026 = forecast made in Mar 2026 for Apr 2026
+  • Fcst1M_May_2026 = forecast made in Apr 2026 for May 2026
+  • Fcst3M_Jan_2026 = forecast made in Oct 2025 for Jan 2026
+  • Fcst3M_Feb_2026 = forecast made in Nov 2025 for Feb 2026
+  • Fcst3M_Mar_2026 = forecast made in Dec 2025 for Mar 2026
+  • Fcst3M_Apr_2026 = forecast made in Jan 2026 for Apr 2026
+  • Fcst3M_May_2026 = forecast made in Feb 2026 for May 2026
+  • Actual_Jan_2026 → Actual_May_2026  (confirmed sales for the same periods)
 
 ## How to answer lag1 comparison questions
 
@@ -159,6 +169,7 @@ Always use the correct year columns — never compare 2026 forecasts against 202
   SKU row, which is WRONG. Every monthly query at market/sub-segment level must look like:
     SELECT ROUND(SUM(col_3PD_Jan_2026)) AS Jan, ROUND(SUM(col_3PD_Feb_2026)) AS Feb, ...
     FROM stat_3pd_forecast WHERE Sub_Segments = 'EMEA ENTERP'
+  -- Note: 3PD columns are ThreePD_Jan_2026 (NOT col_3PD_Jan_2026)
   No LIMIT clause on aggregation queries.
 - Column aliases MUST be just the month name: Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec.
   Never use raw column names or aliases like Jan_2026_3PD, SF_Jan_2026, col_3PD_Jan_2026.
