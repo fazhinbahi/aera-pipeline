@@ -115,14 +115,21 @@ def callout(lines, bg=AMBER):
     return [inner, sp(5)]
 
 
-def dtbl(headers, rows, col_w, center_from=1):
+def dtbl(headers, rows, col_w, center_from=1, font_size=8.5):
     """Styled data table. Columns >= center_from are center-aligned."""
+    def _st(base_key):
+        """Return style, optionally with font_size override."""
+        if font_size == 8.5:
+            return ST[base_key]
+        s = ST[base_key]
+        return ParagraphStyle(base_key + '_s', parent=s, fontSize=font_size, leading=font_size + 2.5)
+
     def pc(text, bold=False, center=False, total=False):
         if total:
-            return Paragraph(str(text), ST['cell_tc'] if center else ST['cell_t'])
+            return Paragraph(str(text), _st('cell_tc') if center else _st('cell_t'))
         if bold:
-            return Paragraph(str(text), ST['cell_h'])
-        return Paragraph(str(text), ST['cell_c'] if center else ST['cell'])
+            return Paragraph(str(text), _st('cell_h'))
+        return Paragraph(str(text), _st('cell_c') if center else _st('cell'))
 
     data = [[pc(h, bold=True, center=True) for h in headers]]
     for ri, row in enumerate(rows):
@@ -356,7 +363,7 @@ def build_prework_pdf(
         # Monthly AdjFC table
         story.append(Paragraph('Adjusted Forecast (AdjFC) by Sub-Brand', ST['sub']))
         n_m = len(open_ms_avail)
-        sub_w  = 4.5 * cm
+        sub_w  = 5.5 * cm
         m_w    = (W - sub_w - 2.0*cm) / max(n_m, 1)
         cw_mo  = [sub_w] + [m_w] * n_m + [2.0*cm]
 
@@ -694,7 +701,7 @@ def build_prework_pdf(
     if not ca.empty:
         top3 = ca.groupby("Sub_Brand_Description")["_YTD_2026"].sum().nlargest(3).index.tolist()
         hist_hdrs = ['Year'] + _ALL_MONTHS + ['Total']
-        hist_cw   = [1.2*cm] + [1.15*cm]*12 + [1.6*cm]
+        hist_cw   = [1.0*cm] + [1.25*cm]*12 + [1.45*cm]
 
         for brand in top3:
             story.append(Paragraph(f'<b>{brand}</b>', ST['sub']))
@@ -714,7 +721,7 @@ def build_prework_pdf(
             row26.append(_fmt(bdf["_YTD_2026"].sum()))
             hist_rows.append(row26)
 
-            story += dtbl(hist_hdrs, hist_rows, hist_cw)
+            story += dtbl(hist_hdrs, hist_rows, hist_cw, font_size=7.5)
 
     story.append(PageBreak())
 
@@ -722,14 +729,22 @@ def build_prework_pdf(
     story += section_hdr('APPENDIX C   TOP-10 PRODUCT RANKINGS')
 
     if not ca.empty:
-        rank_grp = ca.groupby("Sub_Brand_Description").agg(
+        # YTD 2025 = same closed months as 2026 YTD (apples-to-apples comparison)
+        ytd25_cols = [f"Actual_{m}_2025" for m in CLOSED_2026 if f"Actual_{m}_2025" in ca.columns]
+        ca_r = ca.copy()
+        ca_r["_YTD_2025"] = ca_r[ytd25_cols].sum(axis=1) if ytd25_cols else 0.0
+
+        rank_grp = ca_r.groupby("Sub_Brand_Description").agg(
             Vol_2026=("_YTD_2026", "sum"),
-            Vol_2025=("Actual_Total_2025", "sum") if "Actual_Total_2025" in ca.columns
-                     else ("_YTD_2026", "count"),
+            Vol_2025=("_YTD_2025", "sum"),
+            Vol_2025_Full=("Actual_Total_2025", "sum") if "Actual_Total_2025" in ca_r.columns
+                          else ("_YTD_2026", "count"),
         ).reset_index()
 
-        if "Actual_Total_2025" not in ca.columns:
-            rank_grp["Vol_2025"] = 0
+        if "Actual_Total_2025" not in ca_r.columns:
+            rank_grp["Vol_2025_Full"] = 0
+
+        ytd_label = f"Jan–{LAST_CLOSED} 2025" if LAST_CLOSED else "2025 YTD"
 
         # 2026 YTD ranking
         story.append(Paragraph('Top-10 Sub-Brands by 2026 YTD Actual Volume', ST['sub']))
@@ -743,19 +758,19 @@ def build_prework_pdf(
             for _, r in rank26.iterrows()
         ]
         story += dtbl(
-            ['Rank', 'Sub-Brand', '2026 YTD (9LC)', '2025 Full Yr (9LC)', 'YoY %'],
+            ['Rank', 'Sub-Brand', '2026 YTD (9LC)', f'{ytd_label} (9LC)', 'YoY %'],
             r26_rows,
-            [1.0*cm, 6.5*cm, 3.2*cm, 3.2*cm, 1.6*cm],
+            [1.0*cm, 6.0*cm, 3.2*cm, 3.7*cm, 1.6*cm],
             center_from=2,
         )
 
         # 2025 full year ranking
         story.append(Paragraph('Top-10 Sub-Brands by 2025 Full Year Actual Volume', ST['sub']))
-        rank25 = rank_grp.nlargest(10, "Vol_2025").reset_index(drop=True)
+        rank25 = rank_grp.nlargest(10, "Vol_2025_Full").reset_index(drop=True)
         rank25["Rank"] = range(1, len(rank25)+1)
         r25_rows = [
             [r["Rank"], r["Sub_Brand_Description"],
-             _fmt(r["Vol_2025"]), _fmt(r["Vol_2026"])]
+             _fmt(r["Vol_2025_Full"]), _fmt(r["Vol_2026"])]
             for _, r in rank25.iterrows()
         ]
         story += dtbl(
@@ -790,6 +805,12 @@ def build_prework_pdf(
         bf_grp["Delta"]     = bf_grp["Total_2026"] - bf_grp["Actual_Total_2025"]
         bf_grp["Delta_Pct"] = (bf_grp["Delta"] /
                                 bf_grp["Actual_Total_2025"].replace(0, np.nan) * 100)
+        bf_grp = bf_grp[
+            (bf_grp["Brand_Family"].str.strip() != "") &
+            (bf_grp["Brand_Family"] != "Unknown") &
+            (bf_grp["Category"].str.strip() != "") &
+            (bf_grp["Category"] != "Unknown")
+        ]
         bf_grp = bf_grp.sort_values(["Category", "Total_2026"], ascending=[True, False])
 
         bf_rows = []
