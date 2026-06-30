@@ -27,7 +27,11 @@ Metric columns (all volumes in 9LC):
     AdjFC_*    = Adjusted Forecast (human-adjusted plan for open months)
     YoY_Dev_*  = % deviation of AdjFC vs same month in prior year
     PMCF_*     = Previous Month Consensus Forecast (last month's AdjFC, for comparison)
-    SO_*       = Sales Orders (open orders for forecast months)
+    SO_*       = Confirmed Sales Orders for future open months — these are REAL committed
+                 orders already placed by customers and sitting in the system. They represent
+                 actual demand that has been booked, NOT a forecast. Use SO columns to see
+                 what is genuinely coming in for upcoming months (ground-truth pipeline).
+                 SO > AdjFC signals demand exceeding plan; SO << AdjFC signals risk of shortfall.
 
   • 2024 actuals     : Actual_Jan_2024 → Actual_Dec_2024  (Actual_Total_2024 for annual)
   • 2025 actuals     : Actual_Jan_2025 → Actual_Dec_2025  (Actual_Total_2025 for annual)
@@ -35,7 +39,7 @@ Metric columns (all volumes in 9LC):
   • 2026 AdjFC       : AdjFC_Jun_2026 → AdjFC_Dec_2026   (open/forecast months)
   • 2026 annual      : Total_2026  (actuals Jan–May + AdjFC Jun–Dec combined)
   • 2027 AdjFC       : AdjFC_Jan_2027 → AdjFC_Dec_2027  (AdjFC_Total_2027 for annual)
-  • Sales Orders     : SO_Jun_2026 → SO_Dec_2026
+  • Confirmed Orders : SO_Jun_2026 → SO_Dec_2026  ← booked customer orders, not a forecast
   • PMCF             : PMCF_Jan_2026 → PMCF_Dec_2026
   • YTD              : YTD_2025, YTD_2026, YTD_YoY_Pct (YoY % change), FC_vs_SPLY
   • Monthly dev %    : YoY_Dev_Jun_2026 → YoY_Dev_Dec_2026
