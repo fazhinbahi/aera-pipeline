@@ -15,7 +15,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agent import run_agent
-from prework_queries import fetch_customer_analysis, fetch_accuracy
+from prework_queries import fetch_customer_analysis, fetch_accuracy, _client, GCP_PROJECT, DATASET
 from prework_pdf import build_prework_pdf
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -29,6 +29,18 @@ _SUB_SEGMENTS = [
     "EMEA ENTERP", "EMEA DEVELOP", "EMEA GTR", "EMEA IMC",
     "APAC ENTERP", "APAC DEVELOP", "APAC GTR", "APAC IMC",
 ]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_countries() -> list[str]:
+    try:
+        df = _client().query(
+            f"SELECT DISTINCT Country_Name FROM `{GCP_PROJECT}.{DATASET}.customer_analysis` "
+            "WHERE Country_Name IS NOT NULL ORDER BY Country_Name"
+        ).to_dataframe()
+        return df["Country_Name"].tolist()
+    except Exception:
+        return []
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -54,9 +66,12 @@ with st.sidebar:
 
     # ── Pre-Work PDF Generator ────────────────────────────────────────────────
     st.subheader("📋 Generate Pre-Work PDF")
-    pw_country = st.text_input(
+    _countries = _load_countries()
+    pw_country = st.selectbox(
         "Country",
-        placeholder="e.g. Australia, United Kingdom",
+        options=_countries,
+        index=None,
+        placeholder="Select a country…",
         key="pw_country",
     )
     pw_subseg = st.selectbox(
@@ -65,13 +80,13 @@ with st.sidebar:
         key="pw_subseg",
     )
     if st.button("Generate Pre-Work", type="primary", use_container_width=True):
-        if not pw_country.strip():
+        if not pw_country:
             st.error("Please enter a country name.")
         else:
             with st.spinner(f"Building pre-work for {pw_country} {pw_subseg}…"):
                 try:
-                    ca  = fetch_customer_analysis(pw_country.strip(), pw_subseg)
-                    acc = fetch_accuracy(pw_country.strip(), pw_subseg)
+                    ca  = fetch_customer_analysis(pw_country, pw_subseg)
+                    acc = fetch_accuracy(pw_country, pw_subseg)
                     if ca.empty:
                         st.warning(
                             f"No data found for **{pw_country}** / **{pw_subseg}**. "
@@ -79,8 +94,8 @@ with st.sidebar:
                             "'Utd.Arab Emir.', 'Australia')."
                         )
                     else:
-                        pdf_bytes = build_prework_pdf(ca, acc, pw_country.strip(), pw_subseg)
-                        fname = (f"PreWork_{pw_country.strip().replace(' ','_')}"
+                        pdf_bytes = build_prework_pdf(ca, acc, pw_country, pw_subseg)
+                        fname = (f"PreWork_{pw_country.replace(' ','_')}"
                                  f"_{pw_subseg.replace(' ','_')}.pdf")
                         st.download_button(
                             label="⬇ Download PDF",
