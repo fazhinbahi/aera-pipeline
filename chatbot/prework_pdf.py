@@ -311,7 +311,100 @@ def build_prework_pdf(
         ('TOPPADDING',    (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
     ]))
-    story += [sp(40), cover_top, cover_sub, sp(12), meta, PageBreak()]
+    # Cover — key at-a-glance metrics
+    ytd_total   = ca["_YTD_2026"].sum() if not ca.empty else 0
+    fc_cols_all = [f"AdjFC_{m}_2026" for m in OPEN_2026 if f"AdjFC_{m}_2026" in ca.columns]
+    h2_total    = ca[fc_cols_all].sum().sum() if fc_cols_all and not ca.empty else 0
+    act25_total = _col_sum(ca, "Actual_Total_2025") if not ca.empty else 0
+    n_skus      = ca["Material_Number"].nunique() if "Material_Number" in ca.columns and not ca.empty else 0
+    n_customers = ca["Customer_Number"].nunique() if "Customer_Number" in ca.columns and not ca.empty else 0
+    region      = sub_segment.split()[0]  # "APAC" or "EMEA"
+
+    def _kpi_cell(label, value):
+        return [Paragraph(label, ParagraphStyle('kl', fontName='Helvetica', fontSize=8.5,
+                          textColor=GREY, alignment=TA_CENTER, leading=12)),
+                Paragraph(value, ParagraphStyle('kv', fontName='Helvetica-Bold', fontSize=16,
+                          textColor=NAVY, alignment=TA_CENTER, leading=20))]
+
+    kpi_data = [
+        _kpi_cell('2026 YTD Actuals (9LC)',       _fmt(ytd_total)),
+        _kpi_cell(f'H2 2026 AdjFC (9LC)',          _fmt(h2_total)),
+        _kpi_cell('2025 Full Year Actuals (9LC)',  _fmt(act25_total)),
+        _kpi_cell('Active SKUs',                   f"{n_skus:,}"),
+        _kpi_cell('Active Customers',              f"{n_customers:,}"),
+    ]
+    kpi_tbl = Table(
+        [kpi_data],
+        colWidths=[(W + 0.4*cm) / 5] * 5,
+    )
+    kpi_tbl.setStyle(TableStyle([
+        ('BACKGROUND',    (0, 0), (-1, -1), LBLUE),
+        ('TOPPADDING',    (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ('LEFTPADDING',   (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING',  (0, 0), (-1, -1), 6),
+        ('LINEAFTER',     (0, 0), (-2, -1), 0.5, colors.HexColor('#AABDD4')),
+        ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+
+    # Document contents overview
+    _sec_style = ParagraphStyle('sc', fontName='Helvetica', fontSize=9.5,
+                                textColor=BODY_C, leading=16, leftIndent=10)
+    _sec_bold  = ParagraphStyle('scb', fontName='Helvetica-Bold', fontSize=9.5,
+                                textColor=NAVY, leading=16, leftIndent=10)
+    sections_left = [
+        ('1', 'Introduction & Key Metrics'),
+        ('2', 'Confirmed Orders vs Adjusted Forecast'),
+        ('3', 'Forecast Accuracy — Lag-3 (M-3)'),
+        ('4', 'Monthly Year-on-Year Comparison'),
+    ]
+    sections_right = [
+        ('5', 'Deviation Flags — Top 5 Sub-Brands'),
+        ('6', 'Category & Brand Family Sanity Check'),
+        ('B', 'Appendix B — Monthly Historical Sales'),
+        ('C', 'Appendix C — Top-10 Product Rankings'),
+        ('D', 'Appendix D — Category & Brand Family Breakdown'),
+    ]
+    def _sec_rows(items):
+        return [[Paragraph(f'<b>{n}.</b>', _sec_bold), Paragraph(t, _sec_style)]
+                for n, t in items]
+
+    contents_tbl = Table(
+        [[
+            Table(_sec_rows(sections_left),  colWidths=[0.7*cm, (W/2 - 1.0*cm)]),
+            Table(_sec_rows(sections_right), colWidths=[0.7*cm, (W/2 - 0.4*cm)]),
+        ]],
+        colWidths=[W/2, W/2],
+    )
+    contents_tbl.setStyle(TableStyle([
+        ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING',   (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING',  (0, 0), (-1, -1), 0),
+        ('TOPPADDING',    (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+    ]))
+
+    scope_style = ParagraphStyle('sc2', fontName='Helvetica', fontSize=9,
+                                 textColor=GREY, leading=14)
+    scope_line  = (f'<b>Region:</b> {region}  ·  <b>Market:</b> {country}  ·  '
+                   f'<b>Sub-Segment:</b> {sub_segment}  ·  '
+                   f'<b>Data period:</b> Jan 2024 – Dec 2027  ·  '
+                   f'<b>Prepared:</b> {today_str}')
+
+    story += [
+        sp(20), cover_top, cover_sub, sp(14), meta, sp(18),
+        kpi_tbl, sp(16),
+        Paragraph('DOCUMENT CONTENTS', ParagraphStyle('dch', fontName='Helvetica-Bold',
+                  fontSize=10, textColor=NAVY, leading=14, spaceAfter=8)),
+        HRFlowable(width=W + 0.4*cm, thickness=0.5, color=NAVY),
+        sp(6),
+        contents_tbl,
+        sp(20),
+        HRFlowable(width=W + 0.4*cm, thickness=0.5, color=colors.HexColor('#CCCCCC')),
+        sp(6),
+        Paragraph(scope_line, scope_style),
+        PageBreak(),
+    ]
 
     # ══ SECTION 1 — INTRODUCTION ══════════════════════════════════════════════
     story += section_hdr('1   INTRODUCTION AND KEY METRICS')
