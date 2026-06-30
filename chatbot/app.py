@@ -146,6 +146,28 @@ def _csv_download(df: pd.DataFrame, key: str, filename: str = "result.csv"):
     )
 
 
+# ── Welcome message (shown only before first user message) ───────────────────
+if not st.session_state.chat_display:
+    with st.chat_message("assistant"):
+        st.markdown(
+            "## Hi, I'm the Aera Demand Planning Bot 👋\n\n"
+            "I'm connected to your live BigQuery data and can help you analyse "
+            "forecast performance, customer trends, and market insights across "
+            "**EMEA** and **APAC** in real time.\n\n"
+            "**Here's what I can do:**\n\n"
+            "- 📦 **Volume & actuals** — YTD sales, YoY growth, top customers by market\n"
+            "- 🎯 **Forecast accuracy** — MAPE, Bias, Lag-1/Lag-3 vs actuals by SKU or country\n"
+            "- 📊 **Forecast comparison** — AdjFC vs SF vs 3PD vs Source Forecast\n"
+            "- 🚨 **Deviation flags** — which sub-brands are over/under plan and by how much\n"
+            "- 📋 **Pre-work PDF** — generate a full pre-alignment document for any market "
+            "(use the sidebar →)\n\n"
+            "**Try asking:**\n"
+            "> *What is the YTD volume for Australia APAC IMC?*\n\n"
+            "> *Which SKUs have the highest MAPE in Japan?*\n\n"
+            "> *Compare AdjFC vs SO for UK in H2 2026*\n\n"
+            "> *Top 10 sub-brands by 2026 actual sales in EMEA Enterprise*"
+        )
+
 # ── Render existing conversation ──────────────────────────────────────────────
 for chat_idx, item in enumerate(st.session_state.chat_display):
     with st.chat_message(item["role"]):
