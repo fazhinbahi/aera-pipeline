@@ -32,15 +32,21 @@ _SUB_SEGMENTS = [
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _load_countries() -> list[str]:
+def _load_market_map() -> dict[str, list[str]]:
+    """Returns {country: sorted list of sub-segments} from BQ (cached 1 hr)."""
     try:
         df = _client().query(
-            f"SELECT DISTINCT Country_Name FROM `{GCP_PROJECT}.{DATASET}.customer_analysis` "
-            "WHERE Country_Name IS NOT NULL ORDER BY Country_Name"
+            f"SELECT DISTINCT Country_Name, Sub_Segments "
+            f"FROM `{GCP_PROJECT}.{DATASET}.customer_analysis` "
+            "WHERE Country_Name IS NOT NULL AND Sub_Segments IS NOT NULL "
+            "ORDER BY Country_Name, Sub_Segments"
         ).to_dataframe()
-        return df["Country_Name"].tolist()
+        result: dict[str, list[str]] = {}
+        for _, row in df.iterrows():
+            result.setdefault(row["Country_Name"], []).append(row["Sub_Segments"])
+        return result
     except Exception:
-        return []
+        return {}
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -66,22 +72,29 @@ with st.sidebar:
 
     # ── Pre-Work PDF Generator ────────────────────────────────────────────────
     st.subheader("📋 Generate Pre-Work PDF")
-    _countries = _load_countries()
+    _market_map = _load_market_map()
+    _all_countries = sorted(_market_map.keys())
+
     pw_country = st.selectbox(
         "Country",
-        options=_countries,
+        options=_all_countries,
         index=None,
         placeholder="Select a country…",
         key="pw_country",
     )
+
+    # Sub-segment list trims to only what exists for the selected country
+    _available_subsegs = _market_map.get(pw_country, _SUB_SEGMENTS) if pw_country else _SUB_SEGMENTS
     pw_subseg = st.selectbox(
         "Sub-Segment",
-        options=_SUB_SEGMENTS,
+        options=_available_subsegs,
+        index=None,
+        placeholder="Select a sub-segment…",
         key="pw_subseg",
     )
     if st.button("Generate Pre-Work", type="primary", use_container_width=True):
-        if not pw_country:
-            st.error("Please enter a country name.")
+        if not pw_country or not pw_subseg:
+            st.error("Please select both a country and a sub-segment.")
         else:
             with st.spinner(f"Building pre-work for {pw_country} {pw_subseg}…"):
                 try:
