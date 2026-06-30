@@ -341,29 +341,28 @@ def build_prework_pdf(
     n_customers = ca["Customer_Number"].nunique() if "Customer_Number" in ca.columns and not ca.empty else 0
     region      = sub_segment.split()[0]  # "APAC" or "EMEA"
 
-    def _kpi_cell(label, value):
-        return [Paragraph(label, ParagraphStyle('kl', fontName='Helvetica', fontSize=8.5,
-                          textColor=GREY, alignment=TA_CENTER, leading=12)),
-                Paragraph(value, ParagraphStyle('kv', fontName='Helvetica-Bold', fontSize=16,
-                          textColor=NAVY, alignment=TA_CENTER, leading=20))]
-
-    kpi_data = [
-        _kpi_cell('2026 YTD Actuals (9LC)',       _fmt(ytd_total)),
-        _kpi_cell(f'H2 2026 AdjFC (9LC)',          _fmt(h2_total)),
-        _kpi_cell('2025 Full Year Actuals (9LC)',  _fmt(act25_total)),
-        _kpi_cell('Active SKUs',                   f"{n_skus:,}"),
-        _kpi_cell('Active Customers',              f"{n_customers:,}"),
-    ]
+    kpi_labels = ['2026 YTD Actuals (9LC)', 'H2 2026 AdjFC (9LC)',
+                  '2025 Full Year (9LC)', 'Active SKUs', 'Active Customers']
+    kpi_values = [_fmt(ytd_total), _fmt(h2_total), _fmt(act25_total),
+                  f"{n_skus:,}", f"{n_customers:,}"]
+    _kl = ParagraphStyle('kl', fontName='Helvetica', fontSize=8, textColor=GREY,
+                         alignment=TA_CENTER, leading=11)
+    _kv = ParagraphStyle('kv', fontName='Helvetica-Bold', fontSize=15, textColor=NAVY,
+                         alignment=TA_CENTER, leading=19)
+    kpi_col_w = [(W + 0.4*cm) / 5] * 5
     kpi_tbl = Table(
-        [kpi_data],
-        colWidths=[(W + 0.4*cm) / 5] * 5,
+        [[Paragraph(l, _kl) for l in kpi_labels],
+         [Paragraph(v, _kv) for v in kpi_values]],
+        colWidths=kpi_col_w,
     )
     kpi_tbl.setStyle(TableStyle([
         ('BACKGROUND',    (0, 0), (-1, -1), LBLUE),
-        ('TOPPADDING',    (0, 0), (-1, -1), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 6),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 6),
+        ('TOPPADDING',    (0, 0), (  -1, 0),  8),
+        ('BOTTOMPADDING', (0, 0), (  -1, 0),  2),
+        ('TOPPADDING',    (0, 1), (  -1,-1),  2),
+        ('BOTTOMPADDING', (0, 1), (  -1,-1), 10),
+        ('LEFTPADDING',   (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING',  (0, 0), (-1, -1), 4),
         ('LINEAFTER',     (0, 0), (-2, -1), 0.5, colors.HexColor('#AABDD4')),
         ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
     ]))
@@ -390,12 +389,13 @@ def build_prework_pdf(
         return [[Paragraph(f'<b>{n}.</b>', _sec_bold), Paragraph(t, _sec_style)]
                 for n, t in items]
 
+    _half = W / 2
     contents_tbl = Table(
         [[
-            Table(_sec_rows(sections_left),  colWidths=[0.7*cm, (W/2 - 1.0*cm)]),
-            Table(_sec_rows(sections_right), colWidths=[0.7*cm, (W/2 - 0.4*cm)]),
+            Table(_sec_rows(sections_left),  colWidths=[0.7*cm, _half - 0.9*cm]),
+            Table(_sec_rows(sections_right), colWidths=[0.7*cm, _half - 0.9*cm]),
         ]],
-        colWidths=[W/2, W/2],
+        colWidths=[_half, _half],
     )
     contents_tbl.setStyle(TableStyle([
         ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
