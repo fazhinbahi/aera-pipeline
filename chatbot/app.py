@@ -15,6 +15,8 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agent import run_agent
+from prework_queries import fetch_customer_analysis, fetch_accuracy
+from prework_pdf import build_prework_pdf
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -22,6 +24,11 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
+
+_SUB_SEGMENTS = [
+    "EMEA ENTERP", "EMEA DEVELOP", "EMEA GTR", "EMEA IMC",
+    "APAC ENTERP", "APAC DEVELOP", "APAC GTR", "APAC IMC",
+]
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -43,6 +50,49 @@ with st.sidebar:
         "- *Top 10 customers by volume in UK 2025*\n"
         "- *What is the YTD growth for EMEA Enterprise?*\n"
     )
+    st.divider()
+
+    # ── Pre-Work PDF Generator ────────────────────────────────────────────────
+    st.subheader("📋 Generate Pre-Work PDF")
+    pw_country = st.text_input(
+        "Country",
+        placeholder="e.g. Australia, United Kingdom",
+        key="pw_country",
+    )
+    pw_subseg = st.selectbox(
+        "Sub-Segment",
+        options=_SUB_SEGMENTS,
+        key="pw_subseg",
+    )
+    if st.button("Generate Pre-Work", type="primary", use_container_width=True):
+        if not pw_country.strip():
+            st.error("Please enter a country name.")
+        else:
+            with st.spinner(f"Building pre-work for {pw_country} {pw_subseg}…"):
+                try:
+                    ca  = fetch_customer_analysis(pw_country.strip(), pw_subseg)
+                    acc = fetch_accuracy(pw_country.strip(), pw_subseg)
+                    if ca.empty:
+                        st.warning(
+                            f"No data found for **{pw_country}** / **{pw_subseg}**. "
+                            "Check the country name matches exactly (e.g. 'United Kingdom', "
+                            "'Utd.Arab Emir.', 'Australia')."
+                        )
+                    else:
+                        pdf_bytes = build_prework_pdf(ca, acc, pw_country.strip(), pw_subseg)
+                        fname = (f"PreWork_{pw_country.strip().replace(' ','_')}"
+                                 f"_{pw_subseg.replace(' ','_')}.pdf")
+                        st.download_button(
+                            label="⬇ Download PDF",
+                            data=pdf_bytes,
+                            file_name=fname,
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+                        st.success(f"PDF ready — {len(ca):,} rows processed.")
+                except Exception as exc:
+                    st.error(f"Error generating PDF: {exc}")
+
     st.divider()
     if st.button("🗑 Clear conversation"):
         st.session_state.messages = []
