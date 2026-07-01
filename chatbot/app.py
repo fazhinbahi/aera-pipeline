@@ -51,7 +51,7 @@ def _load_market_map() -> dict[str, list[str]]:
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("📊 Demand Planning Assistant")
-    st.caption("Powered by GPT-4.1 + BigQuery")
+    st.caption("Powered by GPT-4.1")
     st.divider()
     st.markdown(
         "**Available tables**\n"
