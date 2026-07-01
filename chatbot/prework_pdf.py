@@ -594,14 +594,16 @@ def build_prework_pdf(
         story.append(Image(chart_buf, width=W, height=chart_h))
         story.append(sp(8))
 
-        # Top-10 table for last closed month
-        if LAST_CLOSED and not acc.empty:
+        # Top-10 table for last available month in acc (may be earlier than LAST_CLOSED
+        # if the pipeline hasn't uploaded the most recent closed month yet)
+        acc_last = monthly_stats[-1]['month'] if monthly_stats else None
+        if acc_last and not acc.empty:
             story.append(Paragraph(
-                f'3.1  Top-10 Sub-Brands — {LAST_CLOSED} 2026  '
+                f'3.1  Top-10 Sub-Brands — {acc_last} 2026  '
                 f'(Lag-3 Forecast vs Actuals)',
                 ST['sub']))
-            fc_c  = f"Fcst3M_{LAST_CLOSED}_2026"
-            act_c = f"Actual_{LAST_CLOSED}_2026"
+            fc_c  = f"Fcst3M_{acc_last}_2026"
+            act_c = f"Actual_{acc_last}_2026"
 
             if fc_c in acc.columns and act_c in acc.columns:
                 top10 = (acc.groupby("Sub_Brand_Description")
@@ -638,7 +640,7 @@ def build_prework_pdf(
                 if gpt_client:
                     worst = top10.nlargest(1, "MAPE_v")
                     commentary = _gpt(
-                        f"Market: {country} {sub_segment}. Month: {LAST_CLOSED} 2026. "
+                        f"Market: {country} {sub_segment}. Month: {acc_last} 2026. "
                         f"Overall wMAPE: {tot_mape:.1f}%, Bias: {_pct(tot_bias)}. "
                         f"Top error driver: {worst.iloc[0]['Sub_Brand_Description']} "
                         f"(MAPE {worst.iloc[0]['MAPE_v']:.1f}%, Bias {_pct(worst.iloc[0]['Bias_v'])}). "

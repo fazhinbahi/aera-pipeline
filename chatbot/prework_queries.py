@@ -63,8 +63,20 @@ def fetch_accuracy(country: str, sub_segment: str) -> pd.DataFrame:
     if not CLOSED_2026:
         return pd.DataFrame()
 
+    client = _client()
+
+    # Only request months whose columns actually exist in lag1_data
+    table = client.get_table(f"{GCP_PROJECT}.{DATASET}.lag1_data")
+    existing = {f.name for f in table.schema}
+    available = [
+        m for m in CLOSED_2026
+        if f"Fcst3M_{m}_2026" in existing and f"Actual_{m}_2026" in existing
+    ]
+    if not available:
+        return pd.DataFrame()
+
     lag_cols = ", ".join(
-        f"l.Fcst3M_{m}_2026, l.Actual_{m}_2026" for m in CLOSED_2026
+        f"l.Fcst3M_{m}_2026, l.Actual_{m}_2026" for m in available
     )
     q = f"""
         SELECT
@@ -88,6 +100,6 @@ def fetch_accuracy(country: str, sub_segment: str) -> pd.DataFrame:
         bigquery.ScalarQueryParameter("sub_segment", "STRING", sub_segment),
     ])
     try:
-        return _client().query(q, job_config=cfg).to_dataframe()
+        return client.query(q, job_config=cfg).to_dataframe()
     except Exception:
         return pd.DataFrame()
