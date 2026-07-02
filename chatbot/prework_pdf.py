@@ -556,14 +556,6 @@ def build_prework_pdf(
 
     # ══ SECTION 3 — FORECAST ACCURACY ════════════════════════════════════════
     story += section_hdr('3   FORECAST ACCURACY — LAG-3 (M-3)')
-    story += [
-        Paragraph(
-            f'Lag-3 forecast accuracy across all closed months of 2026 '
-            f'({", ".join(CLOSED_2026) or "none yet"}). '
-            f'wMAPE and Bias calculated at UPC level and aggregated to market.',
-            ST['body']),
-        sp(4),
-    ]
 
     monthly_stats = []
     if not acc.empty and CLOSED_2026:
@@ -587,6 +579,16 @@ def build_prework_pdf(
                 'wMAPE':   round(tot_err  / tot_act * 100, 1),
                 'Bias':    round(tot_bias / tot_act * 100, 1),
             })
+
+    # Description uses actual available months, not CLOSED_2026 (pipeline may lag by 1 month)
+    avail_months = [d['month'] for d in monthly_stats] if monthly_stats else []
+    months_str   = ", ".join(avail_months) if avail_months else "none yet"
+    story.append(Paragraph(
+        f'Lag-3 forecast accuracy across closed months of 2026 '
+        f'({months_str}). '
+        f'wMAPE and Bias calculated at UPC level and aggregated to market.',
+        ST['body']))
+    story.append(sp(4))
 
     if monthly_stats:
         chart_buf = _accuracy_chart(monthly_stats)
