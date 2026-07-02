@@ -466,91 +466,149 @@ def build_prework_pdf(
     fc_cols = [f"AdjFC_{m}_2026" for m in OPEN_2026 if f"AdjFC_{m}_2026" in ca.columns]
     open_ms_avail = [m for m in OPEN_2026 if f"AdjFC_{m}_2026" in ca.columns]
 
-    if fc_cols and not ca.empty:
-        grp = ca.groupby("Sub_Brand_Description")[so_cols + fc_cols].sum().reset_index()
-        grp = grp[(grp[so_cols].sum(axis=1) > 0) | (grp[fc_cols].sum(axis=1) > 0)]
-        grp["_FC_Total"] = grp[fc_cols].sum(axis=1)
-        grp = grp.sort_values("_FC_Total", ascending=False).head(10)
-        grp["_SO_Total"] = grp[so_cols].sum(axis=1) if so_cols else 0
-        grp["_Delta"]    = grp["_SO_Total"] - grp["_FC_Total"]
-
-        # Monthly AdjFC table
-        story.append(Paragraph('Adjusted Forecast (AdjFC) by Sub-Brand', ST['sub']))
-        n_m = len(open_ms_avail)
-        sub_w  = 5.5 * cm
-        m_w    = (W - sub_w - 2.0*cm) / max(n_m, 1)
-        cw_mo  = [sub_w] + [m_w] * n_m + [2.0*cm]
-
-        fc_hdrs = ['Sub-Brand'] + open_ms_avail + ['H2 Total']
-        fc_rows = []
-        for _, r in grp.iterrows():
-            row = [r['Sub_Brand_Description']]
-            for m in open_ms_avail:
-                row.append(_fmt(_col_sum(r.to_frame().T, f"AdjFC_{m}_2026")))
-            row.append(_fmt(r['_FC_Total']))
-            fc_rows.append(row)
-        fc_rows.append(
-            ['TOTAL'] +
-            [_fmt(grp[f"AdjFC_{m}_2026"].sum() if f"AdjFC_{m}_2026" in grp.columns else 0)
-             for m in open_ms_avail] +
-            [_fmt(grp['_FC_Total'].sum())]
-        )
-        story += dtbl(fc_hdrs, fc_rows, cw_mo, font_size=8.0)
-
-        # Monthly SO table
-        story.append(Paragraph('Confirmed Sales Orders (SO) by Sub-Brand', ST['sub']))
+    if not ca.empty:
+        # ── Market-level monthly summary (Jan–Dec, like Aera view) ───────────
+        story.append(Paragraph('Market Monthly View — Full Year 2026', ST['sub']))
         story.append(Paragraph(
-            'Booked customer orders already in the system. Zeros indicate no orders placed yet for that month.',
+            '(A) = closed month actual  ·  (F) = open month Adjusted Forecast  ·  SO = confirmed sales orders',
             ST['source']))
-        so_hdrs = ['Sub-Brand'] + open_ms_avail + ['H2 Total']
-        so_rows = []
-        for _, r in grp.iterrows():
-            row = [r['Sub_Brand_Description']]
-            for m in open_ms_avail:
-                row.append(_fmt(_col_sum(r.to_frame().T, f"SO_{m}_2026")))
-            row.append(_fmt(r['_SO_Total']))
-            so_rows.append(row)
-        so_rows.append(
-            ['TOTAL'] +
-            [_fmt(grp[f"SO_{m}_2026"].sum() if f"SO_{m}_2026" in grp.columns else 0)
-             for m in open_ms_avail] +
-            [_fmt(grp['_SO_Total'].sum())]
+
+        lbl_w  = 2.4 * cm
+        ytd_w  = 1.7 * cm
+        m_w    = (W - lbl_w - ytd_w) / 12
+
+        # Header row — mark closed vs open months
+        def _mhdr(m):
+            tag = '(A)' if m in CLOSED_2026 else '(F)'
+            return Paragraph(f'<b>{m}</b><br/><font size="5">{tag}</font>', ST['tblH'])
+
+        mkt_hdrs_row = (
+            [Paragraph('<b>Metric</b>', ST['tblH'])] +
+            [_mhdr(m) for m in _ALL_MONTHS] +
+            [Paragraph('<b>YTD</b>', ST['tblH'])]
         )
-        story += dtbl(so_hdrs, so_rows, cw_mo, font_size=8.0)
 
-        # SO vs AdjFC summary table
-        story.append(Paragraph('SO vs AdjFC — Coverage Summary', ST['sub']))
-        sum_hdrs = ['Sub-Brand', 'AdjFC H2 Total', 'SO Total', 'Delta (SO−AdjFC)', 'Coverage %']
-        sum_rows = []
-        for _, r in grp.iterrows():
-            cov = (r['_SO_Total'] / r['_FC_Total'] * 100) if r['_FC_Total'] > 0 else 0
-            sum_rows.append([
-                r['Sub_Brand_Description'],
-                _fmt(r['_FC_Total']),
-                _fmt(r['_SO_Total']),
-                _fmt(r['_Delta']),
-                f"{cov:.0f}%",
-            ])
-        tot_fc = grp['_FC_Total'].sum()
-        tot_so = grp['_SO_Total'].sum()
-        tot_cov = (tot_so / tot_fc * 100) if tot_fc > 0 else 0
-        sum_rows.append(['TOTAL', _fmt(tot_fc), _fmt(tot_so), _fmt(tot_so - tot_fc),
-                          f"{tot_cov:.0f}%"])
-        story += dtbl(sum_hdrs, sum_rows, [5.0*cm, 2.5*cm, 2.5*cm, 3.0*cm, 2.0*cm])
+        def _mkt_val(m):
+            if m in CLOSED_2026:
+                return _col_sum(ca, f"Actual_{m}_2026")
+            col = f"AdjFC_{m}_2026"
+            return _col_sum(ca, col) if col in ca.columns else 0
 
-        if gpt_client:
-            top_brand = grp.nlargest(1, '_FC_Total')['Sub_Brand_Description'].values[0] if not grp.empty else 'N/A'
+        def _so_val(m):
+            if m in CLOSED_2026:
+                return _col_sum(ca, f"Actual_{m}_2026")
+            col = f"SO_{m}_2026"
+            return _col_sum(ca, col) if col in ca.columns else 0
+
+        def _a25_val(m):
+            col = f"Actual_{m}_2025"
+            return _col_sum(ca, col) if col in ca.columns else 0
+
+        act_fc_vals = [_mkt_val(m) for m in _ALL_MONTHS]
+        so_vals     = [_so_val(m)  for m in _ALL_MONTHS]
+        a25_vals    = [_a25_val(m) for m in _ALL_MONTHS]
+
+        ytd_actfc = sum(_mkt_val(m) for m in CLOSED_2026)
+        ytd_so    = sum(_so_val(m)  for m in CLOSED_2026)
+        ytd_a25   = sum(_a25_val(m) for m in CLOSED_2026)
+
+        def _yoy(v26, v25):
+            if v25 == 0:
+                return '—'
+            pct = (v26 - v25) / v25 * 100
+            return f'{pct:+.1f}%'
+
+        yoy_vals = [_yoy(act_fc_vals[i], a25_vals[i]) for i in range(12)]
+        ytd_yoy  = _yoy(ytd_actfc, ytd_a25)
+
+        mkt_data = [
+            mkt_hdrs_row,
+            ([Paragraph('AdjFC / Actuals', ST['tblH'])] +
+             [Paragraph(_fmt(v), ST['tblR']) for v in act_fc_vals] +
+             [Paragraph(_fmt(ytd_actfc), ST['tblR'])]),
+            ([Paragraph('Confirmed SO', ST['tblH'])] +
+             [Paragraph(_fmt(v), ST['tblR']) for v in so_vals] +
+             [Paragraph(_fmt(ytd_so), ST['tblR'])]),
+            ([Paragraph('2025 Actuals', ST['tblH'])] +
+             [Paragraph(_fmt(v), ST['tblR']) for v in a25_vals] +
+             [Paragraph(_fmt(ytd_a25), ST['tblR'])]),
+            ([Paragraph('YoY %', ST['tblH'])] +
+             [Paragraph(v, ST['tblR']) for v in yoy_vals] +
+             [Paragraph(ytd_yoy, ST['tblR'])]),
+        ]
+
+        cw_mkt = [lbl_w] + [m_w] * 12 + [ytd_w]
+        mkt_tbl = Table(mkt_data, colWidths=cw_mkt, repeatRows=1)
+        _closed_idx = [i + 1 for i, m in enumerate(_ALL_MONTHS) if m in CLOSED_2026]
+        _open_idx   = [i + 1 for i, m in enumerate(_ALL_MONTHS) if m not in CLOSED_2026]
+        mkt_style = [
+            ('BACKGROUND',   (0, 0),  (-1, 0),   NAVY),
+            ('TEXTCOLOR',    (0, 0),  (-1, 0),   WHITE),
+            ('FONTNAME',     (0, 0),  (-1, -1),  'Helvetica'),
+            ('FONTSIZE',     (0, 0),  (-1, -1),  7),
+            ('LEADING',      (0, 0),  (-1, -1),  9),
+            ('ALIGN',        (0, 0),  (-1, -1),  'CENTER'),
+            ('ALIGN',        (0, 0),  (0, -1),   'LEFT'),
+            ('VALIGN',       (0, 0),  (-1, -1),  'MIDDLE'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [WHITE, ALTROW]),
+            ('GRID',         (0, 0),  (-1, -1),  0.3, colors.HexColor('#CCCCCC')),
+            ('TOPPADDING',   (0, 0),  (-1, -1),  3),
+            ('BOTTOMPADDING',(0, 0),  (-1, -1),  3),
+            ('LEFTPADDING',  (0, 0),  (-1, -1),  2),
+            ('RIGHTPADDING', (0, 0),  (-1, -1),  2),
+            # YoY row — last row, italic grey
+            ('TEXTCOLOR',    (0, 4),  (-1, 4),   GREY),
+            # Shade closed months slightly
+            ('BACKGROUND',   (0, 1),  (0, -1),   colors.HexColor('#EEF2F8')),
+        ]
+        # Highlight open month SO cols (may show 0 — flag visually)
+        for col_i in _open_idx:
+            mkt_style.append(('TEXTCOLOR', (col_i, 2), (col_i, 2), colors.HexColor('#888888')))
+        mkt_tbl.setStyle(TableStyle(mkt_style))
+        story += [mkt_tbl, sp(10)]
+
+        # ── H2 open-month SO vs AdjFC coverage (sub-brand) ──────────────────
+        if fc_cols:
+            grp = ca.groupby("Sub_Brand_Description")[so_cols + fc_cols].sum().reset_index()
+            grp = grp[(grp[so_cols].sum(axis=1) > 0) | (grp[fc_cols].sum(axis=1) > 0)]
+            grp["_FC_Total"] = grp[fc_cols].sum(axis=1)
+            grp = grp.sort_values("_FC_Total", ascending=False).head(10)
+            grp["_SO_Total"] = grp[so_cols].sum(axis=1) if so_cols else 0
+            grp["_Delta"]    = grp["_SO_Total"] - grp["_FC_Total"]
+
+            # SO vs AdjFC coverage by sub-brand (H2 open months)
+            story.append(Paragraph('SO vs AdjFC — H2 Coverage by Sub-Brand', ST['sub']))
+            sum_hdrs = ['Sub-Brand', 'AdjFC H2 Total', 'SO Total', 'Delta (SO−AdjFC)', 'Coverage %']
+            sum_rows = []
+            for _, r in grp.iterrows():
+                cov = (r['_SO_Total'] / r['_FC_Total'] * 100) if r['_FC_Total'] > 0 else 0
+                sum_rows.append([
+                    r['Sub_Brand_Description'],
+                    _fmt(r['_FC_Total']),
+                    _fmt(r['_SO_Total']),
+                    _fmt(r['_Delta']),
+                    f"{cov:.0f}%",
+                ])
+            tot_fc = grp['_FC_Total'].sum()
+            tot_so = grp['_SO_Total'].sum()
+            tot_cov = (tot_so / tot_fc * 100) if tot_fc > 0 else 0
+            sum_rows.append(['TOTAL', _fmt(tot_fc), _fmt(tot_so), _fmt(tot_so - tot_fc),
+                              f"{tot_cov:.0f}%"])
+            story += dtbl(sum_hdrs, sum_rows, [5.0*cm, 2.5*cm, 2.5*cm, 3.0*cm, 2.0*cm])
+
+        if gpt_client and fc_cols:
+            _h2_fc  = sum(_mkt_val(m) for m in OPEN_2026)
+            _h2_so  = sum(_so_val(m)  for m in OPEN_2026)
+            _h2_cov = (_h2_so / _h2_fc * 100) if _h2_fc > 0 else 0
             commentary = _gpt(
                 f"Market: {country} {sub_segment}. "
-                f"AdjFC H2 2026: {tot_fc:,.0f} 9LC. SO confirmed: {tot_so:,.0f} 9LC. "
-                f"SO coverage: {tot_cov:.1f}%. Top brand by AdjFC: {top_brand}. "
-                f"Write 2-3 sentences of analyst insight on the SO vs AdjFC position for this market.",
+                f"YTD 2026 Actuals: {ytd_actfc:,.0f} 9LC vs {ytd_a25:,.0f} 9LC in 2025 ({ytd_yoy} YoY). "
+                f"H2 AdjFC: {_h2_fc:,.0f} 9LC. SO confirmed: {_h2_so:,.0f} 9LC ({_h2_cov:.1f}% coverage). "
+                f"Write 2-3 sentences of analyst insight on the full-year position and H2 SO coverage risk.",
                 gpt_client,
             )
             if commentary:
-                story += callout([('💡  ANALYST INSIGHT', 'boxB'), (commentary, 'box')], bg=AMBER)
-    else:
-        story.append(Paragraph('No open forecast data available for this market.', ST['source']))
+                story += callout([('■  ANALYST INSIGHT', 'boxB'), (commentary, 'box')], bg=AMBER)
 
     story.append(PageBreak())
 
