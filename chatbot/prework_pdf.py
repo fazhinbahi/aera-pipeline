@@ -69,6 +69,8 @@ ST = {
                  textColor=NAVY, alignment=TA_CENTER, leading=11),
     'tblH':  _S('tblH',  fontName='Helvetica-Bold', fontSize=7,
                  textColor=WHITE, alignment=TA_CENTER, leading=9),
+    'tblL':  _S('tblL',  fontName='Helvetica-Bold', fontSize=7,
+                 textColor=NAVY, alignment=TA_LEFT, leading=9),
     'tblR':  _S('tblR',  fontName='Helvetica', fontSize=7,
                  textColor=BODY_C, alignment=TA_CENTER, leading=9),
     'box':    _S('box',    fontName='Helvetica', fontSize=9, textColor=NAVY,
@@ -527,16 +529,16 @@ def build_prework_pdf(
 
         mkt_data = [
             mkt_hdrs_row,
-            ([Paragraph('AdjFC / Actuals', ST['tblH'])] +
+            ([Paragraph('AdjFC / Actuals', ST['tblL'])] +
              [Paragraph(_fmt(v), ST['tblR']) for v in act_fc_vals] +
              [Paragraph(_fmt(ytd_actfc), ST['tblR'])]),
-            ([Paragraph('Confirmed SO', ST['tblH'])] +
+            ([Paragraph('Confirmed SO', ST['tblL'])] +
              [Paragraph(_fmt(v), ST['tblR']) for v in so_vals] +
              [Paragraph(_fmt(ytd_so), ST['tblR'])]),
-            ([Paragraph('2025 Actuals', ST['tblH'])] +
+            ([Paragraph('2025 Actuals', ST['tblL'])] +
              [Paragraph(_fmt(v), ST['tblR']) for v in a25_vals] +
              [Paragraph(_fmt(ytd_a25), ST['tblR'])]),
-            ([Paragraph('YoY %', ST['tblH'])] +
+            ([Paragraph('YoY %', ST['tblL'])] +
              [Paragraph(v, ST['tblR']) for v in yoy_vals] +
              [Paragraph(ytd_yoy, ST['tblR'])]),
         ]
