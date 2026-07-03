@@ -308,6 +308,10 @@ def load_lag1(client: bigquery.Client):
 
 
 def load_stat_3pd_forecast(client: bigquery.Client):
+    sf_parquet = os.path.join(DIR, "sf_9lc_grain.parquet")
+    if not os.path.exists(sf_parquet):
+        print("sf_9lc_grain.parquet not found — SF fetch likely failed. Skipping stat_3pd_forecast.")
+        return
     print("Building stat_3pd_forecast pivot (Material × Country × Sub-Segments)…")
     df = build_stat_3pd_forecast_df()
     print(f"  {df.shape[0]:,} rows × {df.shape[1]} cols")
