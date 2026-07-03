@@ -567,35 +567,6 @@ def build_prework_pdf(
         mkt_tbl.setStyle(TableStyle(mkt_style))
         story += [mkt_tbl, sp(10)]
 
-        # ── H2 open-month SO vs AdjFC coverage (sub-brand) ──────────────────
-        if fc_cols:
-            grp = ca.groupby("Sub_Brand_Description")[so_cols + fc_cols].sum().reset_index()
-            grp = grp[(grp[so_cols].sum(axis=1) > 0) | (grp[fc_cols].sum(axis=1) > 0)]
-            grp["_FC_Total"] = grp[fc_cols].sum(axis=1)
-            grp = grp.sort_values("_FC_Total", ascending=False).head(10)
-            grp["_SO_Total"] = grp[so_cols].sum(axis=1) if so_cols else 0
-            grp["_Delta"]    = grp["_SO_Total"] - grp["_FC_Total"]
-
-            # SO vs AdjFC coverage by sub-brand (H2 open months)
-            story.append(Paragraph('SO vs AdjFC — H2 Coverage by Sub-Brand', ST['sub']))
-            sum_hdrs = ['Sub-Brand', 'AdjFC H2 Total', 'SO Total', 'Delta (SO−AdjFC)', 'Coverage %']
-            sum_rows = []
-            for _, r in grp.iterrows():
-                cov = (r['_SO_Total'] / r['_FC_Total'] * 100) if r['_FC_Total'] > 0 else 0
-                sum_rows.append([
-                    r['Sub_Brand_Description'],
-                    _fmt(r['_FC_Total']),
-                    _fmt(r['_SO_Total']),
-                    _fmt(r['_Delta']),
-                    f"{cov:.0f}%",
-                ])
-            tot_fc = grp['_FC_Total'].sum()
-            tot_so = grp['_SO_Total'].sum()
-            tot_cov = (tot_so / tot_fc * 100) if tot_fc > 0 else 0
-            sum_rows.append(['TOTAL', _fmt(tot_fc), _fmt(tot_so), _fmt(tot_so - tot_fc),
-                              f"{tot_cov:.0f}%"])
-            story += dtbl(sum_hdrs, sum_rows, [5.0*cm, 2.5*cm, 2.5*cm, 3.0*cm, 2.0*cm])
-
         if gpt_client and fc_cols:
             _h2_fc  = sum(_mkt_val(m) for m in OPEN_2026)
             _h2_so  = sum(_so_val(m)  for m in OPEN_2026)
