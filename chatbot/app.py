@@ -15,7 +15,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agent import run_agent
-from prework_queries import fetch_customer_analysis, fetch_accuracy, _client, GCP_PROJECT, DATASET
+from prework_queries import fetch_customer_analysis, fetch_accuracy, fetch_customers, _client, GCP_PROJECT, DATASET
 from prework_pdf import build_prework_pdf
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -29,6 +29,15 @@ _SUB_SEGMENTS = [
     "EMEA ENTERP", "EMEA DEVELOP", "EMEA GTR", "EMEA IMC",
     "APAC ENTERP", "APAC DEVELOP", "APAC GTR", "APAC IMC",
 ]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_customer_list(country: str, sub_segment: str) -> list:
+    """Returns [(customer_number, distributor_name), ...] for a market (cached 1 hr)."""
+    try:
+        return fetch_customers(country, sub_segment)
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -92,14 +101,38 @@ with st.sidebar:
         placeholder="Select a sub-segment…",
         key="pw_subseg",
     )
+
+    # Customer list loads once both country + sub-segment are chosen
+    pw_customer_num  = None
+    pw_customer_name = None
+    if pw_country and pw_subseg:
+        _customers = _load_customer_list(pw_country, pw_subseg)
+        _cust_labels = ["All customers"] + [
+            f"{name}  ({num})" for num, name in _customers
+        ]
+        _cust_sel = st.selectbox(
+            "Customer (optional)",
+            options=_cust_labels,
+            index=0,
+            key="pw_customer",
+        )
+        if _cust_sel and _cust_sel != "All customers":
+            # Extract customer_number from the label format "Name  (CustNo)"
+            pw_customer_num  = _cust_sel.rsplit("(", 1)[-1].rstrip(")")
+            pw_customer_name = _cust_sel.rsplit("  (", 1)[0]
+    else:
+        st.selectbox("Customer (optional)", options=["All customers"],
+                     disabled=True, key="pw_customer")
+
     if st.button("Generate Pre-Work", type="primary", use_container_width=True):
         if not pw_country or not pw_subseg:
             st.error("Please select both a country and a sub-segment.")
         else:
-            with st.spinner(f"Building pre-work for {pw_country} {pw_subseg}…"):
+            scope = f"{pw_country} {pw_subseg}" + (f" — {pw_customer_name}" if pw_customer_name else "")
+            with st.spinner(f"Building pre-work for {scope}…"):
                 try:
-                    ca  = fetch_customer_analysis(pw_country, pw_subseg)
-                    acc = fetch_accuracy(pw_country, pw_subseg)
+                    ca  = fetch_customer_analysis(pw_country, pw_subseg, pw_customer_num)
+                    acc = fetch_accuracy(pw_country, pw_subseg, pw_customer_num)
                     if ca.empty:
                         st.warning(
                             f"No data found for **{pw_country}** / **{pw_subseg}**. "
@@ -107,9 +140,12 @@ with st.sidebar:
                             "'Utd.Arab Emir.', 'Australia')."
                         )
                     else:
-                        pdf_bytes = build_prework_pdf(ca, acc, pw_country, pw_subseg)
-                        fname = (f"PreWork_{pw_country.replace(' ','_')}"
-                                 f"_{pw_subseg.replace(' ','_')}.pdf")
+                        pdf_bytes = build_prework_pdf(ca, acc, pw_country, pw_subseg,
+                                                      customer_name=pw_customer_name)
+                        safe = lambda s: s.replace(' ', '_') if s else ''
+                        fname = (f"PreWork_{safe(pw_country)}_{safe(pw_subseg)}"
+                                 + (f"_{safe(pw_customer_name)}" if pw_customer_name else "")
+                                 + ".pdf")
                         st.download_button(
                             label="⬇ Download PDF",
                             data=pdf_bytes,

@@ -43,22 +43,47 @@ def _client() -> bigquery.Client:
                            credentials=goog_creds.Credentials(token=token))
 
 
-def fetch_customer_analysis(country: str, sub_segment: str) -> pd.DataFrame:
-    """Full customer_analysis slice for one market."""
+def fetch_customers(country: str, sub_segment: str) -> list:
+    """Return [(customer_number, distributor_name), ...] sorted by name."""
     q = f"""
-        SELECT *
+        SELECT DISTINCT Customer_Number, Distributor_Name
         FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
         WHERE Country_Name = @country
           AND Sub_Segments = @sub_segment
+          AND Customer_Number IS NOT NULL
+        ORDER BY Distributor_Name
     """
     cfg = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("country",     "STRING", country),
         bigquery.ScalarQueryParameter("sub_segment", "STRING", sub_segment),
     ])
+    df = _client().query(q, job_config=cfg).to_dataframe()
+    return [(r["Customer_Number"], r["Distributor_Name"]) for _, r in df.iterrows()]
+
+
+def fetch_customer_analysis(country: str, sub_segment: str,
+                            customer_number: str | None = None) -> pd.DataFrame:
+    """Full customer_analysis slice for one market, optionally filtered by customer."""
+    customer_clause = "AND Customer_Number = @customer_number" if customer_number else ""
+    q = f"""
+        SELECT *
+        FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
+        WHERE Country_Name = @country
+          AND Sub_Segments = @sub_segment
+          {customer_clause}
+    """
+    params = [
+        bigquery.ScalarQueryParameter("country",     "STRING", country),
+        bigquery.ScalarQueryParameter("sub_segment", "STRING", sub_segment),
+    ]
+    if customer_number:
+        params.append(bigquery.ScalarQueryParameter("customer_number", "STRING", customer_number))
+    cfg = bigquery.QueryJobConfig(query_parameters=params)
     return _client().query(q, job_config=cfg).to_dataframe()
 
 
-def fetch_accuracy(country: str, sub_segment: str) -> pd.DataFrame:
+def fetch_accuracy(country: str, sub_segment: str,
+                   customer_number: str | None = None) -> pd.DataFrame:
     """lag1_data joined with customer_analysis for accuracy calculations."""
     if not CLOSED_2026:
         return pd.DataFrame()
@@ -78,6 +103,7 @@ def fetch_accuracy(country: str, sub_segment: str) -> pd.DataFrame:
     lag_cols = ", ".join(
         f"l.Fcst3M_{m}_2026, l.Actual_{m}_2026" for m in available
     )
+    customer_clause = "AND l.Customer_Number = @customer_number" if customer_number else ""
     q = f"""
         SELECT
             l.Material_Number,
@@ -94,11 +120,15 @@ def fetch_accuracy(country: str, sub_segment: str) -> pd.DataFrame:
           AND l.Customer_Number = c.Customer_Number
         WHERE l.Country_Name = @country
           AND c.Sub_Segments = @sub_segment
+          {customer_clause}
     """
-    cfg = bigquery.QueryJobConfig(query_parameters=[
+    params = [
         bigquery.ScalarQueryParameter("country",     "STRING", country),
         bigquery.ScalarQueryParameter("sub_segment", "STRING", sub_segment),
-    ])
+    ]
+    if customer_number:
+        params.append(bigquery.ScalarQueryParameter("customer_number", "STRING", customer_number))
+    cfg = bigquery.QueryJobConfig(query_parameters=params)
     try:
         return client.query(q, job_config=cfg).to_dataframe()
     except Exception:

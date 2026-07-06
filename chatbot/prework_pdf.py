@@ -278,6 +278,7 @@ def build_prework_pdf(
     acc: pd.DataFrame,
     country: str,
     sub_segment: str,
+    customer_name: str | None = None,
 ) -> bytes:
     """
     Build the pre-alignment PDF and return as bytes.
@@ -314,8 +315,13 @@ def build_prework_pdf(
     story = []
 
     # ══ COVER ═════════════════════════════════════════════════════════════════
+    _cover_title = (
+        f'{country.upper()}  ·  {sub_segment}  ·  {customer_name}\nPRE-ALIGNMENT MEETING'
+        if customer_name else
+        f'{country.upper()}  ·  {sub_segment}\nPRE-ALIGNMENT MEETING'
+    )
     cover_top = Table(
-        [[Paragraph(f'{country.upper()}  ·  {sub_segment}\nPRE-ALIGNMENT MEETING', ST['cover1'])]],
+        [[Paragraph(_cover_title, ST['cover1'])]],
         colWidths=[W + 0.4*cm])
     cover_top.setStyle(TableStyle([
         ('BACKGROUND',    (0, 0), (-1, -1), NAVY),
@@ -413,8 +419,9 @@ def build_prework_pdf(
 
     scope_style = ParagraphStyle('sc2', fontName='Helvetica', fontSize=9,
                                  textColor=GREY, leading=14)
+    _cust_part  = f'  ·  <b>Customer:</b> {customer_name}' if customer_name else ''
     scope_line  = (f'<b>Region:</b> {region}  ·  <b>Market:</b> {country}  ·  '
-                   f'<b>Sub-Segment:</b> {sub_segment}  ·  '
+                   f'<b>Sub-Segment:</b> {sub_segment}{_cust_part}  ·  '
                    f'<b>Data period:</b> Jan 2024 – Dec 2027  ·  '
                    f'<b>Prepared:</b> {today_str}')
 
