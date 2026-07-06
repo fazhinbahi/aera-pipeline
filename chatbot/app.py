@@ -31,14 +31,6 @@ _SUB_SEGMENTS = [
 ]
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _load_customer_list(country: str, sub_segment: str) -> list:
-    """Returns [(customer_number, distributor_name), ...] for a market (cached 1 hr)."""
-    try:
-        return fetch_customers(country, sub_segment)
-    except Exception:
-        return []
-
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_market_map() -> dict[str, list[str]]:
@@ -106,7 +98,11 @@ with st.sidebar:
     pw_customer_num  = None
     pw_customer_name = None
     if pw_country and pw_subseg:
-        _customers = _load_customer_list(pw_country, pw_subseg)
+        try:
+            _customers = fetch_customers(pw_country, pw_subseg)
+        except Exception as _cust_err:
+            st.warning(f"Could not load customers: {_cust_err}")
+            _customers = []
         _cust_labels = ["All customers"] + [
             f"{name}  ({num})" for num, name in _customers
         ]
