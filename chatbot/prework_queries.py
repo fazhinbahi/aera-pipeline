@@ -45,21 +45,22 @@ def _client() -> bigquery.Client:
 
 
 def fetch_customers(country: str, sub_segment: str) -> list:
-    """Return [(customer_number, distributor_name), ...] sorted by name."""
+    """Return [(customer_number, customer_name), ...] sorted by name."""
     q = f"""
-        SELECT DISTINCT Customer_Number, Distributor_Name
+        SELECT DISTINCT Customer_Number, Customer_Name
         FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
         WHERE Country_Name = @country
           AND Sub_Segments = @sub_segment
           AND Customer_Number IS NOT NULL
-        ORDER BY Distributor_Name
+          AND Customer_Number != ''
+        ORDER BY Customer_Name
     """
     cfg = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("country",     "STRING", country),
         bigquery.ScalarQueryParameter("sub_segment", "STRING", sub_segment),
     ])
     df = _client().query(q, job_config=cfg).to_dataframe()
-    return [(r["Customer_Number"], r["Distributor_Name"]) for _, r in df.iterrows()]
+    return [(r["Customer_Number"], r["Customer_Name"]) for _, r in df.iterrows()]
 
 
 def fetch_customer_analysis(country: str, sub_segment: str,
