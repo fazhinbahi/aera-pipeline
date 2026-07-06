@@ -70,9 +70,9 @@ def fetch_customers(country: str, sub_segment: str) -> list:
 
 
 def fetch_customer_analysis(country: str, sub_segment: str,
-                            customer_number: Optional[str] = None) -> pd.DataFrame:
-    """Full customer_analysis slice for one market, optionally filtered by customer."""
-    customer_clause = "AND Customer_Number = @customer_number" if customer_number else ""
+                            customer_numbers: Optional[list] = None) -> pd.DataFrame:
+    """Full customer_analysis slice for one market, optionally filtered by customer(s)."""
+    customer_clause = "AND Customer_Number IN UNNEST(@customer_numbers)" if customer_numbers else ""
     q = f"""
         SELECT *
         FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
@@ -84,14 +84,14 @@ def fetch_customer_analysis(country: str, sub_segment: str,
         bigquery.ScalarQueryParameter("country",     "STRING", country),
         bigquery.ScalarQueryParameter("sub_segment", "STRING", sub_segment),
     ]
-    if customer_number:
-        params.append(bigquery.ScalarQueryParameter("customer_number", "STRING", customer_number))
+    if customer_numbers:
+        params.append(bigquery.ArrayQueryParameter("customer_numbers", "STRING", customer_numbers))
     cfg = bigquery.QueryJobConfig(query_parameters=params)
     return _client().query(q, job_config=cfg).to_dataframe()
 
 
 def fetch_accuracy(country: str, sub_segment: str,
-                   customer_number: Optional[str] = None) -> pd.DataFrame:
+                   customer_numbers: Optional[list] = None) -> pd.DataFrame:
     """lag1_data joined with customer_analysis for accuracy calculations."""
     if not CLOSED_2026:
         return pd.DataFrame()
@@ -111,7 +111,7 @@ def fetch_accuracy(country: str, sub_segment: str,
     lag_cols = ", ".join(
         f"l.Fcst3M_{m}_2026, l.Actual_{m}_2026" for m in available
     )
-    customer_clause = "AND l.Customer_Number = @customer_number" if customer_number else ""
+    customer_clause = "AND l.Customer_Number IN UNNEST(@customer_numbers)" if customer_numbers else ""
     q = f"""
         SELECT
             l.Material_Number,
@@ -134,8 +134,8 @@ def fetch_accuracy(country: str, sub_segment: str,
         bigquery.ScalarQueryParameter("country",     "STRING", country),
         bigquery.ScalarQueryParameter("sub_segment", "STRING", sub_segment),
     ]
-    if customer_number:
-        params.append(bigquery.ScalarQueryParameter("customer_number", "STRING", customer_number))
+    if customer_numbers:
+        params.append(bigquery.ArrayQueryParameter("customer_numbers", "STRING", customer_numbers))
     cfg = bigquery.QueryJobConfig(query_parameters=params)
     try:
         return client.query(q, job_config=cfg).to_dataframe()

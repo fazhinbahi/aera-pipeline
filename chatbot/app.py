@@ -94,41 +94,43 @@ with st.sidebar:
         key="pw_subseg",
     )
 
-    # Customer list loads once both country + sub-segment are chosen
-    pw_customer_num  = None
-    pw_customer_name = None
+    # Customer multi-select loads once both country + sub-segment are chosen
+    pw_customer_nums  = []
+    pw_customer_names = []
     if pw_country and pw_subseg:
         try:
             _customers = fetch_customers(pw_country, pw_subseg)
         except Exception as _cust_err:
             st.warning(f"Could not load customers: {_cust_err}")
             _customers = []
-        _cust_labels = ["All customers"] + [
-            f"{name}  ({num})" for num, name in _customers
-        ]
-        _cust_sel = st.selectbox(
+        _cust_options = [f"{name}  ({num})" for num, name in _customers]
+        _cust_sel = st.multiselect(
             "Customer (optional)",
-            options=_cust_labels,
-            index=0,
+            options=_cust_options,
+            default=[],
+            placeholder="All customers…",
             key="pw_customer",
         )
-        if _cust_sel and _cust_sel != "All customers":
-            # Extract customer_number from the label format "Name  (CustNo)"
-            pw_customer_num  = _cust_sel.rsplit("(", 1)[-1].rstrip(")")
-            pw_customer_name = _cust_sel.rsplit("  (", 1)[0]
+        for _sel in _cust_sel:
+            pw_customer_nums.append(_sel.rsplit("(", 1)[-1].rstrip(")"))
+            pw_customer_names.append(_sel.rsplit("  (", 1)[0])
     else:
-        st.selectbox("Customer (optional)", options=["All customers"],
-                     disabled=True, key="pw_customer")
+        st.multiselect("Customer (optional)", options=[],
+                       disabled=True, key="pw_customer",
+                       placeholder="Select country & sub-segment first…")
 
     if st.button("Generate Pre-Work", type="primary", use_container_width=True):
         if not pw_country or not pw_subseg:
             st.error("Please select both a country and a sub-segment.")
         else:
-            scope = f"{pw_country} {pw_subseg}" + (f" — {pw_customer_name}" if pw_customer_name else "")
+            _cust_label = (", ".join(pw_customer_names) if pw_customer_names else None)
+            scope = f"{pw_country} {pw_subseg}" + (f" — {_cust_label}" if _cust_label else "")
             with st.spinner(f"Building pre-work for {scope}…"):
                 try:
-                    ca  = fetch_customer_analysis(pw_country, pw_subseg, pw_customer_num)
-                    acc = fetch_accuracy(pw_country, pw_subseg, pw_customer_num)
+                    ca  = fetch_customer_analysis(pw_country, pw_subseg,
+                                                  pw_customer_nums or None)
+                    acc = fetch_accuracy(pw_country, pw_subseg,
+                                        pw_customer_nums or None)
                     if ca.empty:
                         st.warning(
                             f"No data found for **{pw_country}** / **{pw_subseg}**. "
@@ -137,10 +139,10 @@ with st.sidebar:
                         )
                     else:
                         pdf_bytes = build_prework_pdf(ca, acc, pw_country, pw_subseg,
-                                                      customer_name=pw_customer_name)
-                        safe = lambda s: s.replace(' ', '_') if s else ''
+                                                      customer_name=_cust_label)
+                        safe = lambda s: s.replace(' ', '_').replace(',', '')[:40] if s else ''
                         fname = (f"PreWork_{safe(pw_country)}_{safe(pw_subseg)}"
-                                 + (f"_{safe(pw_customer_name)}" if pw_customer_name else "")
+                                 + (f"_{safe(_cust_label)}" if _cust_label else "")
                                  + ".pdf")
                         st.download_button(
                             label="⬇ Download PDF",
