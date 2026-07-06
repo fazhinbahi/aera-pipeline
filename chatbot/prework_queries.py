@@ -5,6 +5,7 @@ import datetime
 import json
 import os
 import subprocess
+from typing import Optional
 
 import pandas as pd
 from google.cloud import bigquery
@@ -62,7 +63,7 @@ def fetch_customers(country: str, sub_segment: str) -> list:
 
 
 def fetch_customer_analysis(country: str, sub_segment: str,
-                            customer_number: str | None = None) -> pd.DataFrame:
+                            customer_number: Optional[str] = None) -> pd.DataFrame:
     """Full customer_analysis slice for one market, optionally filtered by customer."""
     customer_clause = "AND Customer_Number = @customer_number" if customer_number else ""
     q = f"""
@@ -83,7 +84,7 @@ def fetch_customer_analysis(country: str, sub_segment: str,
 
 
 def fetch_accuracy(country: str, sub_segment: str,
-                   customer_number: str | None = None) -> pd.DataFrame:
+                   customer_number: Optional[str] = None) -> pd.DataFrame:
     """lag1_data joined with customer_analysis for accuracy calculations."""
     if not CLOSED_2026:
         return pd.DataFrame()

@@ -278,7 +278,7 @@ def build_prework_pdf(
     acc: pd.DataFrame,
     country: str,
     sub_segment: str,
-    customer_name: str | None = None,
+    customer_name=None,
 ) -> bytes:
     """
     Build the pre-alignment PDF and return as bytes.
