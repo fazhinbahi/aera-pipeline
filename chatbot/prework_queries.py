@@ -45,22 +45,32 @@ def _client() -> bigquery.Client:
 
 
 def fetch_customers(country: str, sub_segment: str) -> list:
-    """Return [(customer_number, customer_name), ...] sorted by name."""
-    q = f"""
-        SELECT DISTINCT Customer_Number, Customer_Name
-        FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
-        WHERE Country_Name = @country
-          AND Sub_Segments = @sub_segment
-          AND Customer_Number IS NOT NULL
-          AND Customer_Number != ''
-        ORDER BY Customer_Name
-    """
-    cfg = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("country",     "STRING", country),
-        bigquery.ScalarQueryParameter("sub_segment", "STRING", sub_segment),
-    ])
-    df = _client().query(q, job_config=cfg).to_dataframe()
-    return [(r["Customer_Number"], r["Customer_Name"]) for _, r in df.iterrows()]
+    """Return [(customer_number, display_name), ...] sorted by name."""
+    client = _client()
+    # Try with Customer_Name first; fall back to Customer_Number as display label.
+    for name_expr, name_col in [
+        ("COALESCE(NULLIF(TRIM(Customer_Name), ''), Customer_Number)", "display_name"),
+        ("Customer_Number", "Customer_Number"),
+    ]:
+        try:
+            q = f"""
+                SELECT DISTINCT Customer_Number, {name_expr} AS display_name
+                FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
+                WHERE Country_Name = @country
+                  AND Sub_Segments = @sub_segment
+                  AND Customer_Number IS NOT NULL
+                  AND Customer_Number != ''
+                ORDER BY display_name
+            """
+            cfg = bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("country",     "STRING", country),
+                bigquery.ScalarQueryParameter("sub_segment", "STRING", sub_segment),
+            ])
+            df = client.query(q, job_config=cfg).to_dataframe()
+            return [(r["Customer_Number"], r["display_name"]) for _, r in df.iterrows()]
+        except Exception:
+            continue
+    return []
 
 
 def fetch_customer_analysis(country: str, sub_segment: str,
