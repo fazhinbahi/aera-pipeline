@@ -22,6 +22,7 @@ FROM_EMAIL = "friaz@vpconsulting.mx"
 FROM_NAME  = "Aera Demand Planning"
 
 RECIPIENTS = [
+    "friaz@vpconsulting.mx",
     "sjensen@vpconsulting.mx",
     "awadood@vpconsulting.mx",
     "emartinez@vpconsulting.mx",
