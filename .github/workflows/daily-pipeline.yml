@@ -35,8 +35,7 @@ jobs:
         if: success()
         env:
           GCP_SA_JSON: ${{ secrets.GCP_SA_JSON }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
         run: python email_report.py
 
       - name: Notify Slack

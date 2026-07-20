@@ -1,5 +1,5 @@
 """
-Email the SO vs Forecast Mismatch Report as an Excel attachment.
+Email the SO vs Forecast Mismatch Report as an Excel attachment via SendGrid.
 
 Usage:
   python email_report.py          # generate report + send email
@@ -7,21 +7,19 @@ Usage:
 """
 
 import argparse
+import base64
 import os
-import smtplib
 import sys
 from datetime import date, datetime, timezone, timedelta
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from generate_so_fc_report import build_report
 
-SMTP_HOST = "smtp.office365.com"
-SMTP_PORT = 587
-SMTP_USER = os.environ.get("SMTP_USER", "friaz@vpconsulting.mx")
-SMTP_PASS = os.environ.get("SMTP_PASSWORD", "")
+SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
+FROM_EMAIL = "friaz@vpconsulting.mx"
+FROM_NAME  = "Aera Demand Planning"
 
 RECIPIENTS = [
     "sjensen@vpconsulting.mx",
@@ -104,49 +102,45 @@ def _html_body(layer1_count: int, layer2_count: int, report_date: str) -> str:
 
 def send_email(xlsx_path: str, layer1_count: int, layer2_count: int, dry_run: bool = False):
     report_date = datetime.now(PKT).strftime("%A, %d %b %Y")
-    today_str   = date.today().isoformat()
     subject     = f"SO vs Forecast Mismatch Report — {report_date}"
-
-    msg = MIMEMultipart("mixed")
-    msg["From"]    = SMTP_USER
-    msg["To"]      = ", ".join(RECIPIENTS)
-    msg["Subject"] = subject
-
-    # HTML body
-    html_part = MIMEText(_html_body(layer1_count, layer2_count, report_date), "html")
-    msg.attach(html_part)
-
-    # Excel attachment
-    fname = os.path.basename(xlsx_path)
-    with open(xlsx_path, "rb") as f:
-        attachment = MIMEApplication(
-            f.read(),
-            _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-    attachment.add_header("Content-Disposition", "attachment", filename=fname)
-    msg.attach(attachment)
+    fname       = os.path.basename(xlsx_path)
 
     if dry_run:
         print(f"[dry-run] Would send '{subject}' to {RECIPIENTS}")
         print(f"[dry-run] Attachment: {fname}")
         return
 
-    if not SMTP_PASS:
-        print("✗ SMTP_PASSWORD not set — skipping email.")
+    if not SENDGRID_API_KEY:
+        print("✗ SENDGRID_API_KEY not set — skipping email.")
         return
 
+    with open(xlsx_path, "rb") as f:
+        encoded_file = base64.b64encode(f.read()).decode()
+
+    payload = {
+        "personalizations": [{"to": [{"email": r} for r in RECIPIENTS]}],
+        "from": {"email": FROM_EMAIL, "name": FROM_NAME},
+        "subject": subject,
+        "content": [{"type": "text/html", "value": _html_body(layer1_count, layer2_count, report_date)}],
+        "attachments": [{
+            "content": encoded_file,
+            "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "filename": fname,
+        }],
+    }
+
     print(f"Sending email to {RECIPIENTS}…")
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, RECIPIENTS, msg.as_bytes())
+    resp = requests.post(
+        "https://api.sendgrid.com/v3/mail/send",
+        json=payload,
+        headers={"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"},
+        timeout=30,
+    )
+    if resp.status_code == 202:
         print(f"✓ Email sent: '{subject}'")
-    except Exception as e:
-        print(f"✗ Email failed: {e}")
-        raise
+    else:
+        print(f"✗ Email failed: {resp.status_code} — {resp.text}")
+        raise RuntimeError(f"SendGrid error {resp.status_code}")
 
 
 def main(dry_run: bool = False):
