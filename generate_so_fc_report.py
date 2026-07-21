@@ -85,7 +85,8 @@ def _fetch_data(client: bigquery.Client) -> pd.DataFrame:
     ORDER BY b.Sub_Segments, b.Country_Name, b.Customer_Number, b.Material_Number
     """
 
-    return client.query(q).to_dataframe(create_bq_storage_client=False)
+    rows = client.query(q).result()
+    return pd.DataFrame([dict(r) for r in rows])
 
 
 def _build_wide(raw: pd.DataFrame):
