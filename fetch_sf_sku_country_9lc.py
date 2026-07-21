@@ -106,26 +106,35 @@ def make_headers(tok):
     }
 
 
-def init_session(tok):
-    r = requests.get(START_URL, cookies=make_cookies(tok),
-                     headers=make_headers(tok), timeout=60)
-    r.raise_for_status()
-    m = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.+?\});\s*</script>',
-                  r.text, re.DOTALL)
-    if not m:
-        m = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.+)', r.text, re.DOTALL)
-        if m:
-            raw = m.group(1)
-            raw = raw[:raw.rfind("}")+1]
-        else:
-            raise RuntimeError("Could not find __INITIAL_STATE__")
-    else:
-        raw = m.group(1)
-    state   = json.loads(raw)
-    node_id = state["nodeId"]
-    nav_id  = state["navigatorId"]
-    print(f"  ✓ Session: nodeId={node_id[:16]}... navigatorId={nav_id[:16]}...")
-    return node_id, nav_id
+def init_session(tok, max_attempts=5, base_delay=30):
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = requests.get(START_URL, cookies=make_cookies(tok),
+                             headers=make_headers(tok), timeout=120)
+            r.raise_for_status()
+            m = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.+?\});\s*</script>',
+                          r.text, re.DOTALL)
+            if not m:
+                m = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.+)', r.text, re.DOTALL)
+                if m:
+                    raw = m.group(1)
+                    raw = raw[:raw.rfind("}")+1]
+                else:
+                    raise RuntimeError("Could not find __INITIAL_STATE__")
+            else:
+                raw = m.group(1)
+            state   = json.loads(raw)
+            node_id = state["nodeId"]
+            nav_id  = state["navigatorId"]
+            print(f"  ✓ Session: nodeId={node_id[:16]}... navigatorId={nav_id[:16]}...")
+            return node_id, nav_id
+        except (requests.exceptions.ReadTimeout,
+                requests.exceptions.ConnectionError) as exc:
+            if attempt == max_attempts:
+                raise
+            wait = base_delay * attempt
+            print(f"  ⚠ init_session attempt {attempt}/{max_attempts} failed ({exc.__class__.__name__}) — retrying in {wait}s…")
+            time.sleep(wait)
 
 
 def fetch_pair(tok, node_id, nav_id, sku_code, country_code):
