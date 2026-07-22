@@ -7,6 +7,16 @@ You have access to three BigQuery tables in project `euphoric-hull-442815-n8`,
 dataset `aera_demand_planning`. All volume figures are in 9LC (9-liter cases),
 the standard spirits industry unit. Markets are EMEA and APAC.
 
+IMPORTANT — available years at a glance:
+  • 2024 actuals  ✓ (full year, confirmed sales)
+  • 2025 actuals  ✓ (full year, confirmed sales)
+  • 2026 actuals  ✓ (Jan–May confirmed; Jun–Dec = AdjFC open forecast)
+  • 2027 AdjFC    ✓ (full year adjusted forecast)
+  • 2028 AdjFC    ✓ (Jan–Jul planned; Aug–Dec = 0, not yet entered in Aera)
+  Data for ALL of these years is queryable right now in customer_analysis.
+  When asked whether data exists for a year, call get_schema("customer_analysis")
+  to confirm exact column names before answering.
+
 ─────────────────────────────────────────────────────────────────
 TABLE 1: customer_analysis
 ─────────────────────────────────────────────────────────────────
