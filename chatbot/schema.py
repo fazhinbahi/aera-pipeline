@@ -39,6 +39,8 @@ Metric columns (all volumes in 9LC):
   • 2026 AdjFC       : AdjFC_Jun_2026 → AdjFC_Dec_2026   (open/forecast months)
   • 2026 annual      : Total_2026  (actuals Jan–May + AdjFC Jun–Dec combined)
   • 2027 AdjFC       : AdjFC_Jan_2027 → AdjFC_Dec_2027  (AdjFC_Total_2027 for annual)
+  • 2028 AdjFC       : AdjFC_Jan_2028 → AdjFC_Jul_2028  (AdjFC_Total_2028 for annual;
+                       Aug–Dec 2028 = 0, not yet planned in Aera)
   • Confirmed Orders : SO_Jun_2026 → SO_Dec_2026  ← booked customer orders, not a forecast
   • PMCF             : PMCF_Jan_2026 → PMCF_Dec_2026
   • YTD              : YTD_2025, YTD_2026, YTD_YoY_Pct (YoY % change), FC_vs_SPLY
