@@ -79,9 +79,11 @@ def main():
         _log("Steps 1-4 skipped (--skip-fetch) — using existing parquets")
 
     if not args.skip_bq:
-        run_step("load_to_bq.py", "Step 5/5 — Load all tables → BigQuery (incl. stat_3pd_forecast)")
+        run_step("load_to_bq.py",                  "Step 5/7 — Load all tables → BigQuery (incl. stat_3pd_forecast)")
+        run_step("fetch_adjfc_2028.py",             "Step 6/7 — Fetch 2028 AdjFC from Aera")
+        run_step("add_2028_to_customer_analysis.py","Step 7/7 — Append 2028 AdjFC columns to customer_analysis")
     else:
-        _log("Step 5 skipped (--skip-bq)")
+        _log("Steps 5-7 skipped (--skip-bq)")
 
     elapsed = (time.time() - t_start) / 60
     _log(f"════════ Pipeline complete in {elapsed:.1f} min ════════\n")
