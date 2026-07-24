@@ -2,6 +2,7 @@
 Daily Aera data pipeline.
 
 Steps:
+  0. download_prev_adjfc.py — download yesterday's adjfc_raw from BQ → prev_month parquet (PMCF)
   1. fetch_adjfc.py       — refresh AdjFC parquet from Aera (~12 min)
   2. fetch_order_history.py — refresh Order History parquet from Aera
   3. fetch_pmcf.py        — refresh PMCF parquet from Aera
@@ -61,6 +62,11 @@ def main():
 
     t_start = time.time()
     _log("════════ Daily pipeline started ════════")
+
+    # Step 0: download yesterday's adjfc_raw from BQ → adjfc_nz_prev_month.parquet (for PMCF)
+    # Must run before fetch_adjfc.py overwrites adjfc_nz.parquet, and before load_to_bq.py
+    # overwrites adjfc_raw in BQ. Parquets are gitignored so this is the only persistence path.
+    run_step("download_prev_adjfc.py", "Step 0/7 — Download prev AdjFC from BQ (for PMCF)", critical=False)
 
     if not args.skip_fetch:
         run_step("fetch_adjfc.py",         "Step 1/7 — Fetch AdjFC from Aera")
