@@ -163,9 +163,12 @@ def _post(token: str, jsessionid: str, payload: dict, lb_instance_id: str = "",
                 time.sleep(wait)
                 continue
             raise
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError):
             if attempt < retries - 1:
-                time.sleep(10)
+                wait = 20 * (attempt + 1)
+                print(f"    ⚠ Connection/stream error — retry in {wait}s...")
+                time.sleep(wait)
                 continue
             raise
 
@@ -173,7 +176,23 @@ def _post(token: str, jsessionid: str, payload: dict, lb_instance_id: str = "",
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 
 def fetch_all_rows(token: str, jsessionid: str, lb_instance_id: str = "",
-                   page_size: int = PAGE_SIZE) -> pd.DataFrame:
+                   page_size: int = PAGE_SIZE, max_attempts: int = 3) -> pd.DataFrame:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _fetch_all_rows_once(token, jsessionid, lb_instance_id, page_size)
+        except (requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ConnectionError) as exc:
+            if attempt == max_attempts:
+                raise
+            wait = 60 * attempt
+            print(f"  ⚠ Stream dropped mid-fetch ({exc.__class__.__name__}) — "
+                  f"restarting from page 1 in {wait}s (attempt {attempt}/{max_attempts})...")
+            time.sleep(wait)
+    return pd.DataFrame()  # unreachable
+
+
+def _fetch_all_rows_once(token: str, jsessionid: str, lb_instance_id: str = "",
+                         page_size: int = PAGE_SIZE) -> pd.DataFrame:
     base_payload = {
         "sheetid":      REPORT["sheetid"],
         "bioid":        REPORT["bioid"],

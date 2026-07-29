@@ -46,7 +46,8 @@ def main():
 
     print("Downloading adjfc_raw from BigQuery (previous run's AdjFC)…")
     q  = f"SELECT * FROM `{GCP}.{DS}.adjfc_raw`"
-    df = client.query(q).to_dataframe()
+    rows = client.query(q).result()
+    df   = pd.DataFrame([dict(r) for r in rows])
     print(f"  {len(df):,} rows × {df.shape[1]} cols downloaded")
 
     if df.empty:
