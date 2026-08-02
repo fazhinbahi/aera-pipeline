@@ -2,7 +2,7 @@
 SO vs Forecast Mismatch Report
 ===============================
 Grain: SKU × Country × Customer  (one row per grain)
-Months (Jul–Dec 2026) become column headers — SO, FC, Gap per month.
+Open forecast months (dynamic, e.g. Aug–Dec 2026) become column headers — SO, FC, Gap per month.
 
 Layer 1 (priority): rows where at least one month has Sales Order > AdjFC
 Layer 2:            rows where at least one month has AdjFC > SO  (SO > 0)
@@ -19,10 +19,13 @@ from google.cloud import bigquery
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from load_to_bq import _client
+from upload_sply_analysis import MONTHS_2026_FC
 
 GCP_PROJECT = "euphoric-hull-442815-n8"
 DATASET     = "aera_demand_planning"
-OPEN_MONTHS = ["Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+# Derived dynamically so it always matches what load_to_bq actually wrote to BQ.
+# MONTHS_2026_FC = ["Aug 2026", "Sep 2026", ...] — only open forecast months.
+OPEN_MONTHS = [m.split()[0] for m in MONTHS_2026_FC]
 
 DIM_COLS = [
     "Business Segment", "Sub Segment", "Country",

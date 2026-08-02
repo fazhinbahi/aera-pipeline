@@ -268,8 +268,8 @@ def main():
     elapsed  = time.time() - t0
 
     if df_adjfc.empty:
-        print("No data returned.")
-        return
+        print("No data returned — Aera may be down. Aborting to prevent empty BQ load.")
+        sys.exit(1)
 
     print(f"\n{'─' * 60}")
     print(f"Rows:    {len(df_adjfc):,}")

@@ -92,8 +92,18 @@ def fetch_pmcf() -> pd.DataFrame:
 
     print("Fetching Previous Month Consensus Forecast from Aera...")
     t0   = time.time()
-    resp = requests.get(START_URL, headers=headers, cookies=cookies, timeout=90)
-    resp.raise_for_status()
+    resp = None
+    for attempt in range(1, 4):
+        resp = requests.get(START_URL, headers=headers, cookies=cookies, timeout=90)
+        if resp.status_code in (500, 502, 503, 504) and attempt < 3:
+            wait = 60 * attempt
+            print(f"  ⚠ {resp.status_code} Server Error — retry in {wait}s (attempt {attempt}/3)...")
+            time.sleep(wait)
+            tok = ensure_token(min_seconds=300)
+            headers, cookies = _headers_cookies(tok)
+            continue
+        resp.raise_for_status()
+        break
     elapsed = time.time() - t0
     print(f"  Response: {len(resp.text):,} chars in {elapsed:.1f}s")
 
