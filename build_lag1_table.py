@@ -1,15 +1,10 @@
 """
-build_lag1_table.py — Lag-1 forecast vs Actuals table (Jan–May 2026).
+build_lag1_table.py — Lag-1 and Lag-3 forecast vs Actuals table (all closed 2026 months).
 
-Columns:
-  Material_Number | Country_Name
-  Lag1_Jan_2026 | Lag1_Feb_2026 | Lag1_Mar_2026 | Lag1_Apr_2026 | Lag1_May_2026
-  Actual_Jan_2026 | Actual_Feb_2026 | Actual_Mar_2026 | Actual_Apr_2026 | Actual_May_2026
-
-Lag-1 definition: for forecast month M, the forecast made in month M-1.
-Actuals sourced from adjfc_nz.parquet (freshly fetched Jun 22).
+Pairs are computed dynamically from today's date — no manual updates needed each month.
 """
 
+import datetime
 import math
 import os
 import sys
@@ -46,24 +41,27 @@ MEA = "E3524740-47C7-4C30-A381-333FC13DEBD6|SUM|||||"  # Adjusted FC only
 
 PAGE_LIMIT = 2000
 
-# Lag pairs: (snapshot_month, forecast_month)
-LAG1_PAIRS = [
-    ("Dec 2025", "Jan 2026"),
-    ("Jan 2026", "Feb 2026"),
-    ("Feb 2026", "Mar 2026"),
-    ("Mar 2026", "Apr 2026"),
-    ("Apr 2026", "May 2026"),
+# Lag pairs are computed dynamically so this file never needs manual updates.
+_ALL_2026 = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+_TODAY    = datetime.date.today()
+_CUR_START = _TODAY.replace(day=1)
+
+# Closed = every 2026 month that has fully completed before today
+FORECAST_MONTHS = [
+    f"{m} 2026" for m in _ALL_2026
+    if datetime.datetime.strptime(f"{m} 2026", "%b %Y").date() < _CUR_START
 ]
 
-LAG3_PAIRS = [
-    ("Oct 2025", "Jan 2026"),
-    ("Nov 2025", "Feb 2026"),
-    ("Dec 2025", "Mar 2026"),
-    ("Jan 2026", "Apr 2026"),
-    ("Feb 2026", "May 2026"),
-]
+def _shift(month_str: str, delta: int) -> str:
+    """Return the month string `delta` months earlier (negative) or later."""
+    dt = datetime.datetime.strptime(month_str, "%b %Y")
+    m, y = dt.month + delta, dt.year
+    while m <= 0:  m += 12; y -= 1
+    while m > 12: m -= 12; y += 1
+    return datetime.date(y, m, 1).strftime("%b %Y")
 
-FORECAST_MONTHS = ["Jan 2026", "Feb 2026", "Mar 2026", "Apr 2026", "May 2026"]
+LAG1_PAIRS = [(_shift(m, -1), m) for m in FORECAST_MONTHS]
+LAG3_PAIRS = [(_shift(m, -3), m) for m in FORECAST_MONTHS]
 
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
@@ -167,7 +165,7 @@ def load_actuals():
     ).reset_index()
     pivot.columns.name = None
 
-    # Ensure all 5 months exist
+    # Ensure all closed months exist as columns
     for m in FORECAST_MONTHS:
         if m not in pivot.columns:
             pivot[m] = 0.0
@@ -188,7 +186,7 @@ def main():
     KEY = ["Material_Number", "Country_Name", "Customer_Number"]
 
     # ── Fetch all 5 Lag-1 pairs ───────────────────────────────────────────────
-    print("Fetching Lag-1 forecasts (5 months)...")
+    print(f"Fetching Lag-1 forecasts ({len(LAG1_PAIRS)} months: {FORECAST_MONTHS[0]}–{FORECAST_MONTHS[-1]})...")
     lag1_frames = []
     for snapshot, forecast in LAG1_PAIRS:
         df = fetch_lag_pair(snapshot, forecast, token, jsessionid, lb)
