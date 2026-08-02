@@ -138,39 +138,75 @@ def fetch_lag_pair(snapshot_month, forecast_month, token, jsessionid, lb):
     return agg
 
 
-# ── Actuals from adjfc parquet ────────────────────────────────────────────────
+# ── Booked Sales Orders from BQ (always current) ─────────────────────────────
+
+GCP_PROJECT = "euphoric-hull-442815-n8"
+DATASET     = "aera_demand_planning"
+
+def load_sales_orders_bq() -> pd.DataFrame:
+    """Booked SOs from BQ order_history_raw — updated daily by the pipeline."""
+    from load_to_bq import _client
+    client = _client()
+    months_list = ", ".join(f"'{m}'" for m in FORECAST_MONTHS)
+    q = f"""
+        SELECT
+            Material_Number,
+            Country_Name,
+            Customer_Bill_to_Number AS Customer_Number,
+            Month_Year,
+            SUM(Order_Qty_9LC) AS SO_9LC
+        FROM `{GCP_PROJECT}.{DATASET}.order_history_raw`
+        WHERE Month_Year IN ({months_list})
+        GROUP BY 1, 2, 3, 4
+        HAVING SUM(Order_Qty_9LC) > 0
+    """
+    df = client.query(q).to_dataframe()
+    df["Customer_Number"] = df["Customer_Number"].astype(str)
+    print(f"  {len(df):,} SO rows from BQ order_history_raw")
+    return df
+
+
+# ── Actuals: MAX(invoiced, booked SO) per grain ───────────────────────────────
 
 def load_actuals():
+    """Best actual = MAX(invoiced actuals from AdjFC, booked SOs from order_history)."""
     path = os.path.join(DIR, "adjfc_nz.parquet")
     df = pd.read_parquet(path)
 
-    # Use friendly column names (already mapped in fetch_adjfc.py)
     act = df[df["Month Year"].isin(FORECAST_MONTHS)][
         ["Material Number", "Country Name", "Customer Number", "Month Year", "Actuals"]
     ].copy()
     act.columns = ["Material_Number", "Country_Name", "Customer_Number", "Month_Year", "Actuals"]
     act["Actuals"] = pd.to_numeric(act["Actuals"], errors="coerce").fillna(0)
     act["Customer_Number"] = act["Customer_Number"].astype(str)
+    act = act.groupby(["Material_Number", "Country_Name", "Customer_Number", "Month_Year"],
+                      as_index=False)["Actuals"].sum()
 
-    agg = act.groupby(["Material_Number", "Country_Name", "Customer_Number", "Month_Year"], as_index=False)["Actuals"].sum()
-    agg = agg[agg["Actuals"] != 0]
+    print("Loading Sales Orders from BQ...")
+    so = load_sales_orders_bq()
 
-    # Pivot wide
-    pivot = agg.pivot_table(
+    # Outer join — keep rows from either source, take the higher value
+    KEY = ["Material_Number", "Country_Name", "Customer_Number", "Month_Year"]
+    merged = act.merge(so, on=KEY, how="outer")
+    merged["Actuals"] = merged["Actuals"].fillna(0)
+    merged["SO_9LC"]  = merged["SO_9LC"].fillna(0)
+    merged["Best_Actual"] = merged[["Actuals", "SO_9LC"]].max(axis=1)
+    merged = merged[merged["Best_Actual"] > 0]
+
+    # Pivot wide: one Actual_{m}_2026 column per closed month
+    pivot = merged.pivot_table(
         index=["Material_Number", "Country_Name", "Customer_Number"],
         columns="Month_Year",
-        values="Actuals",
+        values="Best_Actual",
         aggfunc="sum",
         fill_value=0,
     ).reset_index()
     pivot.columns.name = None
 
-    # Ensure all closed months exist as columns
     for m in FORECAST_MONTHS:
         if m not in pivot.columns:
             pivot[m] = 0.0
 
-    # Rename to Actual_*
     rename = {m: f"Actual_{m.replace(' ', '_')}" for m in FORECAST_MONTHS}
     pivot = pivot.rename(columns=rename)
     return pivot
