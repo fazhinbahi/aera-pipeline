@@ -176,7 +176,7 @@ def _customer_analysis_rename_map() -> dict:
 
 def _lag1_rename_map() -> dict:
     """Rename Lag1_/Lag3_ to Fcst1M_/Fcst3M_ so meaning is self-evident."""
-    months = ["Jan","Feb","Mar","Apr","May"]
+    months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
     rename: dict = {}
     for m in months:
         rename[f"Lag1_{m}_2026"] = f"Fcst1M_{m}_2026"
