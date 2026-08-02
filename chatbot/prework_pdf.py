@@ -612,6 +612,9 @@ def build_prework_pdf(
                 continue
             tot_act  = sub[act_c].sum()
             tot_fc   = sub[fc_c].sum()
+            # Skip months where actuals are <40% of Lag-3 forecast — data not yet complete
+            if tot_fc > 0 and tot_act / tot_fc < 0.40:
+                continue
             tot_err  = (sub[fc_c] - sub[act_c]).abs().sum()
             tot_bias = (sub[fc_c] - sub[act_c]).sum()
             monthly_stats.append({
