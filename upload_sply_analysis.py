@@ -113,6 +113,16 @@ BUDGET_COLS        = [f"Budget {m}" for m in MONTHS_2026_BUDGET]
 BUDGET_JOIN_KEYS   = ["Material Number", "Country Name", "Sub-Segments"]   # no Customer — budget is brand-level
 BUDGET_PARQUET     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forecast_3yr_full.parquet")
 
+# Jan–Mar 2026 budget is never returned by Aera once those months actualize.
+# These scaling factors (from Aera FA page Jan 2026 snapshot) are applied at build time
+# to restore the full-year budget: ratio = FA_total / parquet_total per actualized month.
+# Stored as month → FA-page total (9LC) so the pivot can be rescaled SKU-proportionally.
+_BUDGET_CLOSED_MONTH_TOTALS = {
+    "Jan 2026": 197_172,
+    "Feb 2026": 223_363,
+    "Mar 2026": 295_219,
+}
+
 # Stat Forecast / 3PD / Source Forecast columns
 MONTHS_SF_2026 = [f"{m} 2026" for m in _ALL_2026_MONTHS]
 MONTHS_SF_2027 = [f"{m} 2027" for m in _ALL_2026_MONTHS]
@@ -268,6 +278,11 @@ def build_budget_pivot() -> pd.DataFrame:
     every customer row within the same SKU × Country × Sub-Segments gets the
     same budget value.
 
+    Jan–Mar 2026 budget is permanently absent from the parquet once those months
+    actualize in Aera. We restore them by distributing the known FA-page totals
+    (_BUDGET_CLOSED_MONTH_TOTALS) proportionally using Apr 2026's grain shares as
+    the distribution proxy — the earliest month with full grain-level data.
+
     Date format in the parquet: '01 Jan 2026' → normalised to 'Jan 2026'.
     """
     if not os.path.exists(BUDGET_PARQUET):
@@ -302,9 +317,21 @@ def build_budget_pivot() -> pd.DataFrame:
         if m not in piv.columns:
             piv[m] = 0.0
 
+    # Backfill closed months (Jan–Mar) using Apr 2026 grain proportions scaled
+    # to each closed month's known FA-page total.
+    ref_col = "Apr 2026"
+    ref_total = piv[ref_col].sum() if ref_col in piv.columns else 0
+    for closed_m, fa_total in _BUDGET_CLOSED_MONTH_TOTALS.items():
+        if piv[closed_m].sum() == 0 and ref_total > 0:
+            piv[closed_m] = piv[ref_col] / ref_total * fa_total
+            print(f"  Budget {closed_m}: restored {piv[closed_m].sum():,.0f} "
+                  f"(FA-page total {fa_total:,} distributed via Apr 2026 grain shares)")
+
     piv = piv.rename(columns={m: f"Budget {m}" for m in MONTHS_2026_BUDGET})
     nonzero_rows = (piv[BUDGET_COLS].sum(axis=1) > 0).sum()
-    print(f"  Budget pivot: {len(piv):,} grains, {nonzero_rows:,} with non-zero budget")
+    total_budget = piv[BUDGET_COLS].sum().sum()
+    print(f"  Budget pivot: {len(piv):,} grains, {nonzero_rows:,} with budget | "
+          f"2026 total = {total_budget:,.0f} (FA-page: 4,050,389)")
     return piv
 
 
