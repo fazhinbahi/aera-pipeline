@@ -168,6 +168,12 @@ def _customer_analysis_rename_map() -> dict:
         "Q4_Dev": "YoY_Dev_Q4",
     })
 
+    # Budget — full 2026 year
+    months_all = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    for m in months_all:
+        rename[f"Budget_{m}_2026"] = f"Budget_{m}_2026"  # keep as-is, already clear
+    rename["Budget_2026_Total"] = "Budget_Total_2026"
+
     # YTD clarity
     rename["YTD_SPLY"] = "YTD_YoY_Pct"
 

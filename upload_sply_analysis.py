@@ -106,6 +106,13 @@ MAPE_MONTHS = [
 ]
 MAPE_COLS = [f"MAPE {m}" for m in MAPE_MONTHS] + ["MAPE Total", "Grain Count"]
 
+# Budget — 2026 months available in forecast_3yr_full.parquet (typically May-Dec)
+# Budget is set at Material × Country × Sub-Segments grain (brand/market level, not per customer)
+MONTHS_2026_BUDGET = [f"{m} 2026" for m in _ALL_2026_MONTHS]
+BUDGET_COLS        = [f"Budget {m}" for m in MONTHS_2026_BUDGET]
+BUDGET_JOIN_KEYS   = ["Material Number", "Country Name", "Sub-Segments"]   # no Customer — budget is brand-level
+BUDGET_PARQUET     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forecast_3yr_full.parquet")
+
 # Stat Forecast / 3PD / Source Forecast columns
 MONTHS_SF_2026 = [f"{m} 2026" for m in _ALL_2026_MONTHS]
 MONTHS_SF_2027 = [f"{m} 2027" for m in _ALL_2026_MONTHS]
@@ -253,6 +260,54 @@ def build_pmcf_pivot(keys: list) -> pd.DataFrame:
     return piv
 
 
+def build_budget_pivot() -> pd.DataFrame:
+    """Pivot Budget (9LC) from forecast_3yr_full.parquet for all 2026 months.
+
+    Budget is an annual plan in Aera at Material × Country × Sub-Segments grain
+    (brand/market level — does not vary per customer). Joined at that grain so
+    every customer row within the same SKU × Country × Sub-Segments gets the
+    same budget value.
+
+    Date format in the parquet: '01 Jan 2026' → normalised to 'Jan 2026'.
+    """
+    if not os.path.exists(BUDGET_PARQUET):
+        print("  ⚠ forecast_3yr_full.parquet not found — Budget zeroed")
+        return pd.DataFrame(columns=BUDGET_JOIN_KEYS + BUDGET_COLS)
+
+    raw = pd.read_parquet(BUDGET_PARQUET)
+    raw["Budget"] = pd.to_numeric(raw["Budget"], errors="coerce").fillna(0)
+
+    # Normalise '01 Jan 2026' → 'Jan 2026'
+    raw["Month Year"] = pd.to_datetime(raw["Date"], format="%d %b %Y", errors="coerce").dt.strftime("%b %Y")
+    bud = raw[raw["Month Year"].isin(set(MONTHS_2026_BUDGET)) & (raw["Budget"] > 0)].copy()
+
+    if bud.empty:
+        print("  ⚠ No Budget data for 2026 in parquet — Budget zeroed")
+        return pd.DataFrame(columns=BUDGET_JOIN_KEYS + BUDGET_COLS)
+
+    agg = (
+        bud.groupby(BUDGET_JOIN_KEYS + ["Month Year"], dropna=False)
+        ["Budget"].sum().reset_index()
+    )
+    piv = agg.pivot_table(
+        index=BUDGET_JOIN_KEYS,
+        columns="Month Year",
+        values="Budget",
+        aggfunc="sum",
+        fill_value=0,
+    ).reset_index()
+    piv.columns.name = None
+
+    for m in MONTHS_2026_BUDGET:
+        if m not in piv.columns:
+            piv[m] = 0.0
+
+    piv = piv.rename(columns={m: f"Budget {m}" for m in MONTHS_2026_BUDGET})
+    nonzero_rows = (piv[BUDGET_COLS].sum(axis=1) > 0).sum()
+    print(f"  Budget pivot: {len(piv):,} grains, {nonzero_rows:,} with non-zero budget")
+    return piv
+
+
 def build_sf_pivot() -> pd.DataFrame:
     """Stat Forecast / 3PD / Source Forecast pivot at Material × Country × Sub-Segments.
 
@@ -397,10 +452,15 @@ def build_final(oh: pd.DataFrame, fc: pd.DataFrame) -> pd.DataFrame:
     pmcf_piv = build_pmcf_pivot(JOIN_KEYS)
     print(f"  {pmcf_piv.shape[0]:,} rows")
 
+    print("Building Budget pivot (2026 months from forecast_3yr_full)...")
+    budget_piv = build_budget_pivot()
+
     print("Outer joining on Material × Country × Sub-Segments × Customer...")
     joined = oh_piv.merge(fc_piv, on=JOIN_KEYS, how="outer", suffixes=("", "_fc"))
     if not pmcf_piv.empty and len(pmcf_piv) > 1:
         joined = joined.merge(pmcf_piv, on=JOIN_KEYS, how="left")
+    if not budget_piv.empty and len(budget_piv) > 1:
+        joined = joined.merge(budget_piv, on=BUDGET_JOIN_KEYS, how="left")
     print(f"  {joined.shape[0]:,} rows after join")
 
     # Backfill dimension columns from AdjFC where Order History has no data
@@ -497,6 +557,14 @@ def build_final(oh: pd.DataFrame, fc: pd.DataFrame) -> pd.DataFrame:
             joined[col] = 0.0
         joined[col] = pd.to_numeric(joined[col], errors="coerce").fillna(0.0)
 
+    # Ensure Budget columns are numeric
+    for col in BUDGET_COLS:
+        if col not in joined.columns:
+            joined[col] = 0.0
+        joined[col] = pd.to_numeric(joined[col], errors="coerce").fillna(0.0)
+
+    joined["Budget 2026 Total"] = joined[BUDGET_COLS].sum(axis=1)
+
     # ── Assemble final column order ───────────────────────────────────────────
     final_cols = (
         DIM_COLS
@@ -508,6 +576,8 @@ def build_final(oh: pd.DataFrame, fc: pd.DataFrame) -> pd.DataFrame:
         + MONTHS_2026_FC
         + MONTHS_2026_SO
         + MONTHS_2026_PMCF
+        + BUDGET_COLS
+        + ["Budget 2026 Total"]
         + ["2026 Total", "YTD 2025", "YTD 2026", "YTD SPLY%", "FC vs SPLY%"]
         + dev_month_cols
         + q_dev_cols
@@ -659,10 +729,15 @@ def build_customer_analysis(oh: pd.DataFrame, fc: pd.DataFrame) -> pd.DataFrame:
     pmcf_piv = build_pmcf_pivot(CUSTOMER_JOIN_KEYS)
     print(f"  {pmcf_piv.shape[0]:,} rows")
 
+    print("Building Budget pivot (2026 months from forecast_3yr_full)...")
+    budget_piv = build_budget_pivot()
+
     print("Outer joining on Material + Country + Sub-Segments + Customer...")
     joined = oh_piv.merge(fc_piv, on=CUSTOMER_JOIN_KEYS, how="outer", suffixes=("", "_fc"))
     if not pmcf_piv.empty and len(pmcf_piv) > 1:
         joined = joined.merge(pmcf_piv, on=CUSTOMER_JOIN_KEYS, how="left")
+    if not budget_piv.empty and len(budget_piv) > 1:
+        joined = joined.merge(budget_piv, on=BUDGET_JOIN_KEYS, how="left")
     print(f"  {joined.shape[0]:,} rows after join")
 
     # Backfill dimension columns from AdjFC
@@ -748,6 +823,13 @@ def build_customer_analysis(oh: pd.DataFrame, fc: pd.DataFrame) -> pd.DataFrame:
             joined[col] = 0.0
         joined[col] = pd.to_numeric(joined[col], errors="coerce").fillna(0.0)
 
+    for col in BUDGET_COLS:
+        if col not in joined.columns:
+            joined[col] = 0.0
+        joined[col] = pd.to_numeric(joined[col], errors="coerce").fillna(0.0)
+
+    joined["Budget 2026 Total"] = joined[BUDGET_COLS].sum(axis=1)
+
     # Join Forecast Accuracy MAPE (Lag 1, Jun 2025–May 2026) at SKU × Country grain
     mape_cols_added = []
     if os.path.exists(MAPE_PARQUET):
@@ -778,6 +860,8 @@ def build_customer_analysis(oh: pd.DataFrame, fc: pd.DataFrame) -> pd.DataFrame:
         + MONTHS_2026_FC
         + MONTHS_2026_SO
         + MONTHS_2026_PMCF
+        + BUDGET_COLS
+        + ["Budget 2026 Total"]
         + ["2026 Total", "YTD 2025", "YTD 2026", "YTD SPLY%", "FC vs SPLY%"]
         + dev_month_cols
         + q_dev_cols

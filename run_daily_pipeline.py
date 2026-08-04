@@ -58,6 +58,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-fetch", action="store_true", help="Skip Aera API fetch steps")
     parser.add_argument("--skip-bq",    action="store_true", help="Skip BigQuery upload")
+    parser.add_argument("--skip-gqo",   action="store_true", help="Skip GQO agent step")
     args = parser.parse_args()
 
     t_start = time.time()
@@ -90,6 +91,16 @@ def main():
         run_step("add_2028_to_customer_analysis.py","Step 7/7 — Append 2028 AdjFC columns to customer_analysis")
     else:
         _log("Steps 5-7 skipped (--skip-bq)")
+
+    # ── GQO Agent — generate + submit adjustments where orders > adjFC ─────────
+    if not args.skip_gqo:
+        run_step(
+            "gqo_agent.py", "Step 8 — GQO Agent: generate & submit order-vs-forecast adjustments",
+            extra_args=["--generate", "--max-rounds", "5"],
+            critical=False,  # GQO failure should not abort the rest of the pipeline
+        )
+    else:
+        _log("Step 8 skipped (--skip-gqo)")
 
     elapsed = (time.time() - t_start) / 60
     _log(f"════════ Pipeline complete in {elapsed:.1f} min ════════\n")

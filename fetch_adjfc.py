@@ -164,10 +164,11 @@ def _post(token: str, jsessionid: str, payload: dict, lb_instance_id: str = "",
                 continue
             raise
         except (requests.exceptions.ConnectionError,
-                requests.exceptions.ChunkedEncodingError):
+                requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ReadTimeout):
             if attempt < retries - 1:
                 wait = 20 * (attempt + 1)
-                print(f"    ⚠ Connection/stream error — retry in {wait}s...")
+                print(f"    ⚠ Connection/stream/timeout error — retry in {wait}s...")
                 time.sleep(wait)
                 continue
             raise
@@ -176,12 +177,15 @@ def _post(token: str, jsessionid: str, payload: dict, lb_instance_id: str = "",
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 
 def fetch_all_rows(token: str, jsessionid: str, lb_instance_id: str = "",
-                   page_size: int = PAGE_SIZE, max_attempts: int = 3) -> pd.DataFrame:
+                   page_size: int = PAGE_SIZE, max_attempts: int = 3,
+                   extra_filter: str = "") -> pd.DataFrame:
     for attempt in range(1, max_attempts + 1):
         try:
-            return _fetch_all_rows_once(token, jsessionid, lb_instance_id, page_size)
+            return _fetch_all_rows_once(token, jsessionid, lb_instance_id,
+                                        page_size, extra_filter=extra_filter)
         except (requests.exceptions.ChunkedEncodingError,
-                requests.exceptions.ConnectionError) as exc:
+                requests.exceptions.ConnectionError,
+                requests.exceptions.ReadTimeout) as exc:
             if attempt == max_attempts:
                 raise
             wait = 60 * attempt
@@ -192,7 +196,8 @@ def fetch_all_rows(token: str, jsessionid: str, lb_instance_id: str = "",
 
 
 def _fetch_all_rows_once(token: str, jsessionid: str, lb_instance_id: str = "",
-                         page_size: int = PAGE_SIZE) -> pd.DataFrame:
+                         page_size: int = PAGE_SIZE, extra_filter: str = "") -> pd.DataFrame:
+    report_filter = REPORT["filter"] + extra_filter
     base_payload = {
         "sheetid":      REPORT["sheetid"],
         "bioid":        REPORT["bioid"],
@@ -200,7 +205,7 @@ def _fetch_all_rows_once(token: str, jsessionid: str, lb_instance_id: str = "",
         "row":          REPORT["row"],
         "col":          "",
         "mea":          REPORT["mea"],
-        "filter":       REPORT["filter"],
+        "filter":       report_filter,
         "pot":          "0",
         "sort":         REPORT["sort"],
         "dir":          REPORT["dir"],
@@ -249,12 +254,20 @@ def _fetch_all_rows_once(token: str, jsessionid: str, lb_instance_id: str = "",
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+# Material Number field ID (for SKU-level API filter)
+_MATERIAL_FIELD = "04E2EDB1-1A36-11ED-A548-0A617A24E20D_454245B2-6AF3-49B8-AA8E-18FEC4E340DC"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch Adj FC + Actuals EA data from Aera")
     parser.add_argument("--no-save",   action="store_true",
                         help="Skip saving files (print DataFrame info only)")
     parser.add_argument("--page-size", type=int, default=PAGE_SIZE,
                         help=f"Rows per API call (default: {PAGE_SIZE})")
+    parser.add_argument("--sku",    help="Comma-separated SKUs — adds Material Number API filter for fast targeted fetch")
+    parser.add_argument("--output", default=OUTPUT_PARQUET,
+                        help="Output parquet path (default: adjfc_nz.parquet)")
+    parser.add_argument("--no-csv", action="store_true", help="Skip CSV output")
     args = parser.parse_args()
 
     tok            = load_token()
@@ -262,9 +275,17 @@ def main():
     jsessionid     = tok.get("jsessionid", "")
     lb_instance_id = tok.get("lb_instance_id", "")
 
+    # Build extra filter for targeted SKU fetch
+    extra_filter = ""
+    if args.sku:
+        skus = [s.strip() for s in args.sku.split(",") if s.strip()]
+        extra_filter = f"^{_MATERIAL_FIELD}~=|{'|'.join(skus)}~EN"
+        print(f"\nTargeted fetch — SKUs: {', '.join(skus)}")
+
     print("\nFetching Adj FC + Actuals EA (New Zealand) report...")
     t0 = time.time()
-    df_adjfc = fetch_all_rows(token, jsessionid, lb_instance_id, page_size=args.page_size)
+    df_adjfc = fetch_all_rows(token, jsessionid, lb_instance_id,
+                              page_size=args.page_size, extra_filter=extra_filter)
     elapsed  = time.time() - t0
 
     if df_adjfc.empty:
@@ -279,10 +300,10 @@ def main():
     print(df_adjfc.head(3).to_string())
 
     if not args.no_save:
-        # Backup existing parquet as "previous month" before overwriting
-        PREV_PARQUET = OUTPUT_PARQUET.replace(".parquet", "_prev_month.parquet")
-        if os.path.exists(OUTPUT_PARQUET):
+        # Backup main parquet before overwriting (only when saving to main path)
+        if args.output == OUTPUT_PARQUET and os.path.exists(OUTPUT_PARQUET):
             import shutil
+            PREV_PARQUET = OUTPUT_PARQUET.replace(".parquet", "_prev_month.parquet")
             shutil.copy2(OUTPUT_PARQUET, PREV_PARQUET)
             print(f"  Backed up previous parquet → {os.path.basename(PREV_PARQUET)}")
 
@@ -291,10 +312,12 @@ def main():
         for col in measure_cols:
             if col in df_adjfc.columns:
                 df_adjfc[col] = pd.to_numeric(df_adjfc[col], errors="coerce")
-        df_adjfc.to_parquet(OUTPUT_PARQUET, index=False)
-        df_adjfc.to_csv(OUTPUT_CSV, index=False)
-        print(f"\n✓ Saved → {OUTPUT_PARQUET}")
-        print(f"✓ Saved → {OUTPUT_CSV}")
+        df_adjfc.to_parquet(args.output, index=False)
+        print(f"\n✓ Saved → {args.output}")
+        if not args.no_csv:
+            csv_path = args.output.replace(".parquet", ".csv")
+            df_adjfc.to_csv(csv_path, index=False)
+            print(f"✓ Saved → {csv_path}")
 
     return df_adjfc
 
