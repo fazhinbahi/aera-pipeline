@@ -1,5 +1,5 @@
-streamlit>=1.57.0
-starlette<0.46.0
+streamlit>=1.40.0
+starlette>=0.41.0,<0.46.0
 openai>=1.0.0
 google-cloud-bigquery>=3.0.0
 google-auth>=2.0.0
