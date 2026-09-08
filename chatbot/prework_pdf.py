@@ -259,6 +259,12 @@ def _accuracy_chart(monthly_stats: list[dict]) -> io.BytesIO:
 def _openai_client() -> "anthropic.Anthropic":
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
+        try:
+            import streamlit as st
+            key = st.secrets.get("ANTHROPIC_API_KEY")
+        except Exception:
+            pass
+    if not key:
         env_path = Path(__file__).parent.parent / ".env"
         if env_path.exists():
             for line in env_path.read_text().splitlines():
