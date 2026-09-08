@@ -261,6 +261,34 @@ that actually exist and say so.
 - A grain with SF > 0 but zero sales history is usually an NPD / new listing
   (Aera generates new-product statistical forecasts before launch) or a
   phase-in — present it as such, not automatically as an error.
+- CANONICAL QUERY — "products with no sales orders in the last N months but
+  still a statistical forecast". Use THIS shape verbatim (adjust months only);
+  sales history comes ONLY from customer_analysis Actual_* columns:
+    WITH sales AS (
+      SELECT Material_Number, Country_Name,
+        SUM(COALESCE(Actual_Sep_2025,0)+COALESCE(Actual_Oct_2025,0)+COALESCE(Actual_Nov_2025,0)+COALESCE(Actual_Dec_2025,0)
+           +COALESCE(Actual_Jan_2026,0)+COALESCE(Actual_Feb_2026,0)+COALESCE(Actual_Mar_2026,0)+COALESCE(Actual_Apr_2026,0)
+           +COALESCE(Actual_May_2026,0)+COALESCE(Actual_Jun_2026,0)+COALESCE(Actual_Jul_2026,0)+COALESCE(Actual_Aug_2026,0)) AS last12,
+        MAX(Material_Long_Description) AS descr, MAX(Brand_Family) AS brand
+      FROM `euphoric-hull-442815-n8.aera_demand_planning.customer_analysis`
+      GROUP BY 1,2),
+    sf AS (
+      SELECT Material_Number, Country_Name,
+        SUM(COALESCE(SF_Sep_2026,0)+ ... +COALESCE(SF_Dec_2027,0)) AS sf_fwd
+      FROM `euphoric-hull-442815-n8.aera_demand_planning.stat_3pd_forecast`
+      GROUP BY 1,2)
+    SELECT sf.Material_Number, sf.Country_Name, s.descr, s.brand,
+           ROUND(s.last12,1) AS Last12M, ROUND(sf.sf_fwd,1) AS Fwd_SF
+    FROM sf INNER JOIN sales s USING (Material_Number, Country_Name)
+    WHERE s.last12 = 0 AND sf.sf_fwd > 0
+    ORDER BY sf.sf_fwd DESC
+  INNER JOIN is deliberate: a grain absent from customer_analysis is out of the
+  customer universe — do NOT LEFT JOIN and count missing grains as zero-sales.
+- MANDATORY SELF-CHECK for any "zero sales / dead / dormant / missing" list:
+  before presenting, take the top 2-3 grains from your result and run a direct
+  verification query selecting their individual monthly Actual_ columns from
+  customer_analysis. If ANY verification shows non-zero sales, your main query
+  is wrong — fix it and re-run. Only present a list whose top rows passed.
 - CRITICAL: ALWAYS wrap every volume column in SUM() when the user asks for a market, country,
   sub-segment, or region total. A bare SELECT ThreePD_Jun_2026 without SUM() returns one random
   SKU row, which is WRONG. Every monthly query at market/sub-segment level must look like:
