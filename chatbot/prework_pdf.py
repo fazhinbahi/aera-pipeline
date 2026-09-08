@@ -14,7 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
-from openai import OpenAI
+import anthropic
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import cm
@@ -186,21 +186,19 @@ def _col_sum(df, col):
     return df[col].sum() if col in df.columns else 0
 
 
-# ── GPT-4.1 commentary ────────────────────────────────────────────────────────
-def _gpt(prompt: str, client: OpenAI) -> str:
+# ── Claude commentary ─────────────────────────────────────────────────────────
+def _gpt(prompt: str, client: "anthropic.Anthropic") -> str:
     try:
-        resp = client.chat.completions.create(
-            model="gpt-4.1",
+        resp = client.messages.create(
+            model="claude-sonnet-5",
             max_tokens=160,
-            messages=[
-                {"role": "system", "content": (
-                    "You are a concise demand planning analyst. Write 2-3 sentences "
-                    "of professional insight. No bullet points. No headers. Be direct and specific."
-                )},
-                {"role": "user", "content": prompt},
-            ],
+            system=(
+                "You are a concise demand planning analyst. Write 2-3 sentences "
+                "of professional insight. No bullet points. No headers. Be direct and specific."
+            ),
+            messages=[{"role": "user", "content": prompt}],
         )
-        return resp.choices[0].message.content.strip()
+        return "".join(b.text for b in resp.content if b.type == "text").strip()
     except Exception:
         return ""
 
@@ -257,17 +255,17 @@ def _accuracy_chart(monthly_stats: list[dict]) -> io.BytesIO:
     return buf
 
 
-# ── OpenAI client ─────────────────────────────────────────────────────────────
-def _openai_client() -> OpenAI:
-    key = os.environ.get("OPENAI_API_KEY")
+# ── Anthropic client ──────────────────────────────────────────────────────────
+def _openai_client() -> "anthropic.Anthropic":
+    key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         env_path = Path(__file__).parent.parent / ".env"
         if env_path.exists():
             for line in env_path.read_text().splitlines():
-                if line.strip().startswith("OPENAI_API_KEY="):
+                if line.strip().startswith("ANTHROPIC_API_KEY="):
                     key = line.split("=", 1)[1].strip()
                     break
-    return OpenAI(api_key=key) if key else None
+    return anthropic.Anthropic(api_key=key) if key else None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
