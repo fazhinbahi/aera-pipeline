@@ -187,6 +187,7 @@ def _lag1_rename_map() -> dict:
     for m in months:
         rename[f"Lag1_{m}_2026"] = f"Fcst1M_{m}_2026"
         rename[f"Lag3_{m}_2026"] = f"Fcst3M_{m}_2026"
+        rename[f"Lag4_{m}_2026"] = f"Fcst4M_{m}_2026"   # PBI "n-3" convention
     return rename
 
 

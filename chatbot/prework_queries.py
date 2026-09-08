@@ -103,13 +103,13 @@ def fetch_accuracy(country: str, sub_segment: str,
     existing = {f.name for f in table.schema}
     available = [
         m for m in CLOSED_2026
-        if f"Fcst3M_{m}_2026" in existing and f"Actual_{m}_2026" in existing
+        if f"Fcst4M_{m}_2026" in existing and f"Actual_{m}_2026" in existing
     ]
     if not available:
         return pd.DataFrame()
 
     lag_cols = ", ".join(
-        f"l.Fcst3M_{m}_2026, l.Actual_{m}_2026" for m in available
+        f"l.Fcst4M_{m}_2026, l.Actual_{m}_2026" for m in available
     )
     customer_clause = "AND l.Customer_Number IN UNNEST(@customer_numbers)" if customer_numbers else ""
     q = f"""

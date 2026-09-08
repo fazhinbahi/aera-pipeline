@@ -62,6 +62,9 @@ def _shift(month_str: str, delta: int) -> str:
 
 LAG1_PAIRS = [(_shift(m, -1), m) for m in FORECAST_MONTHS]
 LAG3_PAIRS = [(_shift(m, -3), m) for m in FORECAST_MONTHS]
+# Snapshot 4 months prior = the "n-3" convention used by the Becle Power BI
+# accuracy report (verified: matches PBI within ~0.1-1.6% at pack level)
+LAG4_PAIRS = [(_shift(m, -4), m) for m in FORECAST_MONTHS]
 
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
@@ -229,23 +232,32 @@ def main():
         df = df.rename(columns={"Adjusted_FC": f"Lag1_{forecast.replace(' ', '_')}"})
         lag1_frames.append(df)
 
-    # ── Fetch all 5 Lag-3 pairs ───────────────────────────────────────────────
-    print("\nFetching Lag-3 forecasts (5 months)...")
+    # ── Fetch all Lag-3 pairs ─────────────────────────────────────────────────
+    print("\nFetching Lag-3 forecasts...")
     lag3_frames = []
     for snapshot, forecast in LAG3_PAIRS:
         df = fetch_lag_pair(snapshot, forecast, token, jsessionid, lb)
         df = df.rename(columns={"Adjusted_FC": f"Lag3_{forecast.replace(' ', '_')}"})
         lag3_frames.append(df)
 
+    # ── Fetch all Lag-4 pairs (PBI n-3 convention) ────────────────────────────
+    print("\nFetching Lag-4 forecasts (PBI n-3)...")
+    lag4_frames = []
+    for snapshot, forecast in LAG4_PAIRS:
+        df = fetch_lag_pair(snapshot, forecast, token, jsessionid, lb)
+        df = df.rename(columns={"Adjusted_FC": f"Lag4_{forecast.replace(' ', '_')}"})
+        lag4_frames.append(df)
+
     # ── Merge all lag frames ──────────────────────────────────────────────────
     print("\nMerging lag frames...")
     lag_wide = lag1_frames[0]
-    for frame in lag1_frames[1:] + lag3_frames:
+    for frame in lag1_frames[1:] + lag3_frames + lag4_frames:
         lag_wide = lag_wide.merge(frame, on=KEY, how="outer")
 
     lag1_col_names = [f"Lag1_{m.replace(' ', '_')}" for m in FORECAST_MONTHS]
     lag3_col_names = [f"Lag3_{m.replace(' ', '_')}" for m in FORECAST_MONTHS]
-    lag_col_names  = lag1_col_names + lag3_col_names
+    lag4_col_names = [f"Lag4_{m.replace(' ', '_')}" for m in FORECAST_MONTHS]
+    lag_col_names  = lag1_col_names + lag3_col_names + lag4_col_names
     for c in lag_col_names:
         lag_wide[c] = lag_wide[c].fillna(0)
 
@@ -269,7 +281,7 @@ def main():
     # Sort
     result = result.sort_values(["Country_Name", "Customer_Number", "Material_Number"]).reset_index(drop=True)
 
-    col_order = ["Material_Number", "Country_Name", "Customer_Number"] + lag1_col_names + lag3_col_names + actual_col_names
+    col_order = ["Material_Number", "Country_Name", "Customer_Number"] + lag1_col_names + lag3_col_names + lag4_col_names + actual_col_names
     result = result[col_order]
 
     # ── Save ──────────────────────────────────────────────────────────────────
@@ -299,7 +311,7 @@ def main():
             cell.font = bold
             cell.alignment = center
             cell.border = border
-            if col_name.startswith("Lag1_"):
+            if col_name.startswith("Lag"):
                 cell.fill = lag_fill
             elif col_name.startswith("Actual_"):
                 cell.fill = actual_fill
@@ -310,7 +322,7 @@ def main():
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
             for cell in row:
                 col_name = result.columns[cell.column - 1]
-                if col_name.startswith(("Lag1_", "Actual_")):
+                if col_name.startswith(("Lag", "Actual_")):
                     cell.number_format = "#,##0.0"
                 cell.border = border
 
@@ -328,7 +340,7 @@ def main():
     print(f"  Rows: {len(result):,}  |  Mat×Country combos")
     print(f"  Saved → {out_xlsx}")
     print(f"\nSummary totals:")
-    for c in lag1_col_names + lag3_col_names + actual_col_names:
+    for c in lag1_col_names + lag3_col_names + lag4_col_names + actual_col_names:
         print(f"  {c}: {result[c].sum():>12,.1f}")
 
 

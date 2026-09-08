@@ -207,7 +207,7 @@ def _gpt(prompt: str, client: "anthropic.Anthropic") -> str:
 def _accuracy_chart(monthly_stats: list[dict]) -> io.BytesIO:
     months = [d['month']   for d in monthly_stats]
     acts   = [d['Actuals'] for d in monthly_stats]
-    lag3s  = [d['Lag3FC']  for d in monthly_stats]
+    lag3s  = [d['IBPFC']   for d in monthly_stats]
     wmapes = [d['wMAPE']   for d in monthly_stats]
     biases = [d['Bias']    for d in monthly_stats]
 
@@ -218,7 +218,7 @@ def _accuracy_chart(monthly_stats: list[dict]) -> io.BytesIO:
 
     # Left axis — volume bars
     ax1.bar(x - w/2, acts,  w, label='Actuals (9LC)',    color='#1B2B4B', alpha=0.88)
-    ax1.bar(x + w/2, lag3s, w, label='Lag-3 Fcst (9LC)', color='#90B4D4', alpha=0.90)
+    ax1.bar(x + w/2, lag3s, w, label='IBP n-3 Fcst (9LC)', color='#90B4D4', alpha=0.90)
     ax1.set_ylabel('Volume (9LC)', fontsize=8, color='#333333')
     ax1.tick_params(axis='y', labelsize=8)
     ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
@@ -244,7 +244,7 @@ def _accuracy_chart(monthly_stats: list[dict]) -> io.BytesIO:
     h2, l2 = ax2.get_legend_handles_labels()
     ax1.legend(h1 + h2, l1 + l2, fontsize=8, framealpha=0.8, loc='upper right')
 
-    ax1.set_title('Lag-3 Forecast Accuracy — 2026 YTD', fontsize=9,
+    ax1.set_title('IBP n-3 Forecast Accuracy — 2026 YTD', fontsize=9,
                   fontweight='bold', color='#1B2B4B', pad=8)
     fig.tight_layout(pad=0.8)
 
@@ -391,7 +391,7 @@ def build_prework_pdf(
     sections_left = [
         ('1', 'Introduction & Key Metrics'),
         ('2', 'Confirmed Orders vs Adjusted Forecast'),
-        ('3', 'Forecast Accuracy — Lag-3 (M-3)'),
+        ('3', 'Forecast Accuracy — IBP n-3'),
         ('4', 'Monthly Year-on-Year Comparison'),
     ]
     sections_right = [
@@ -452,7 +452,7 @@ def build_prework_pdf(
             f'<b>{country} {sub_segment}</b> — <b>{cycle} forecast cycle</b>. '
             f'Exception-based review covering:', ST['body']),
         bul('Confirmed Sales Orders vs Adjusted Forecast — remaining open months'),
-        bul('Forecast Accuracy (Lag-3) — wMAPE &amp; Bias across all closed 2026 months'),
+        bul('Forecast Accuracy (IBP n-3) — wMAPE &amp; Bias across all closed 2026 months'),
         bul('Top-10 Product Performance — last closed month'),
         bul('Monthly Year-on-Year Comparison — 2026 vs 2025'),
         bul('Deviation Flags — Top 5 Sub-Brands'),
@@ -601,12 +601,12 @@ def build_prework_pdf(
     story.append(PageBreak())
 
     # ══ SECTION 3 — FORECAST ACCURACY ════════════════════════════════════════
-    story += section_hdr('3   FORECAST ACCURACY — LAG-3 (M-3)')
+    story += section_hdr('3   FORECAST ACCURACY — IBP n-3')
 
     monthly_stats = []
     if not acc.empty and CLOSED_2026:
         for m in CLOSED_2026:
-            fc_c  = f"Fcst3M_{m}_2026"
+            fc_c  = f"Fcst4M_{m}_2026"
             act_c = f"Actual_{m}_2026"
             if fc_c not in acc.columns or act_c not in acc.columns:
                 continue
@@ -618,7 +618,7 @@ def build_prework_pdf(
                 continue
             tot_act  = sub[act_c].sum()
             tot_fc   = sub[fc_c].sum()
-            # Skip months where actuals are <15% of Lag-3 forecast — booked SOs make
+            # Skip months where actuals are <15% of the n-3 forecast — booked SOs make
             # recent months much more complete; 15% catches genuine data-not-yet-available
             if tot_fc > 0 and tot_act / tot_fc < 0.15:
                 continue
@@ -627,7 +627,7 @@ def build_prework_pdf(
             monthly_stats.append({
                 'month':   m,
                 'Actuals': round(tot_act),
-                'Lag3FC':  round(tot_fc),
+                'IBPFC':   round(tot_fc),
                 'wMAPE':   round(tot_err  / tot_act * 100, 1),
                 'Bias':    round(tot_bias / tot_act * 100, 1),
             })
@@ -636,8 +636,10 @@ def build_prework_pdf(
     avail_months = [d['month'] for d in monthly_stats] if monthly_stats else []
     months_str   = ", ".join(avail_months) if avail_months else "none yet"
     story.append(Paragraph(
-        f'Lag-3 forecast accuracy across closed months of 2026 '
-        f'({months_str}). '
+        f'IBP n-3 forecast accuracy across closed months of 2026 '
+        f'({months_str}). The n-3 forecast is the consensus snapshot frozen 4 '
+        f'calendar months before each target month — the same convention as the '
+        f'Power BI accuracy report. '
         f'wMAPE and Bias calculated at UPC level and aggregated to market.',
         ST['body']))
     story.append(sp(4))
@@ -654,9 +656,9 @@ def build_prework_pdf(
         if acc_last and not acc.empty:
             story.append(Paragraph(
                 f'3.1  Top-10 Sub-Brands — {acc_last} 2026  '
-                f'(Lag-3 Forecast vs Actuals)',
+                f'(IBP n-3 Forecast vs Actuals)',
                 ST['sub']))
-            fc_c  = f"Fcst3M_{acc_last}_2026"
+            fc_c  = f"Fcst4M_{acc_last}_2026"
             act_c = f"Actual_{acc_last}_2026"
 
             if fc_c in acc.columns and act_c in acc.columns:
@@ -679,7 +681,7 @@ def build_prework_pdf(
                 tot_mape = tot_err / tot_act * 100 if tot_act > 0 else 0
                 tot_bias = (tot_ibp - tot_act) / tot_act * 100 if tot_act > 0 else 0
 
-                acc_hdrs = ['Sub-Brand', 'IBP (Lag-3)', 'Actuals', 'Abs Error', 'wMAPE', 'Bias%']
+                acc_hdrs = ['Sub-Brand', 'IBP (n-3)', 'Actuals', 'Abs Error', 'wMAPE', 'Bias%']
                 acc_rows = []
                 for _, r in top10.iterrows():
                     acc_rows.append([
@@ -710,7 +712,7 @@ def build_prework_pdf(
                                           (commentary, 'box')], bg=AMBER)
     else:
         story.append(Paragraph(
-            'No lag-3 accuracy data available for this market.', ST['source']))
+            'No n-3 accuracy data available for this market.', ST['source']))
 
     story.append(PageBreak())
 

@@ -142,7 +142,7 @@ Metric columns (all volumes in 9LC):
 TABLE 3: lag1_data
 ─────────────────────────────────────────────────────────────────
 Grain   : Material × Country × Customer
-Rows    : ~9,999
+Rows    : ~10,331
 Use for : Forecast accuracy (FA/WMAPE), forecast bias (FB), Lag-1/Lag-3
           forecast vs what actually sold. Self-contained — it carries its
           own Actual_ columns, so NO join is needed for accuracy maths.
@@ -157,7 +157,12 @@ Metric columns — coverage is Jan 2026 → Aug 2026 (closed 2026 months;
 2024/2025 lag snapshots are NOT available). Use get_schema for the
 current column list.
     Fcst1M_<Mon>_2026 = Adjusted Forecast frozen 1 month before that month (Lag-1)
-    Fcst3M_<Mon>_2026 = Adjusted Forecast frozen 3 months before that month (Lag-3)
+    Fcst3M_<Mon>_2026 = Adjusted Forecast frozen 3 calendar months before (Aera calendar Lag-3)
+    Fcst4M_<Mon>_2026 = Adjusted Forecast frozen 4 calendar months before — this is
+                        the "n-3" / "Lag 3" convention of the company Power BI
+                        accuracy report (verified to match it within ~0.1-1.6%).
+                        DEFAULT to Fcst4M when the user says "lag-3", "n-3" or
+                        "FA/FB" without specifying a convention, and say so.
     Actual_<Mon>_2026 = confirmed sales for that month
 
 ## How to compute accuracy metrics (volume-weighted, the standard here)
@@ -168,20 +173,22 @@ For a chosen scope (country/sub-brand/SKU/month range):
 Compute SUMs over the scope FIRST, then the ratio — never average
 row-level percentages (that is simple MAPE, only use it if explicitly asked).
 
-Example — China Lag-3 FA/FB for Aug 2026:
+Example — China n-3 (PBI Lag-3) FA/FB for Aug 2026:
   SELECT
-    ROUND(SUM(Fcst3M_Aug_2026)) AS Lag3_Fcst,
-    ROUND(SUM(Actual_Aug_2026)) AS Actuals,
-    ROUND(SUM(ABS(Fcst3M_Aug_2026 - Actual_Aug_2026))
-          / NULLIF(SUM(Actual_Aug_2026),0) * 100, 1) AS WMAPE_Pct,
-    ROUND((SUM(Fcst3M_Aug_2026) - SUM(Actual_Aug_2026))
-          / NULLIF(SUM(Actual_Aug_2026),0) * 100, 1) AS Bias_Pct
+    ROUND(SUM(COALESCE(Fcst4M_Aug_2026,0))) AS N3_Fcst,
+    ROUND(SUM(COALESCE(Actual_Aug_2026,0))) AS Actuals,
+    ROUND(SUM(ABS(COALESCE(Fcst4M_Aug_2026,0) - COALESCE(Actual_Aug_2026,0)))
+          / NULLIF(SUM(COALESCE(Actual_Aug_2026,0)),0) * 100, 1) AS WMAPE_Pct,
+    ROUND((SUM(COALESCE(Fcst4M_Aug_2026,0)) - SUM(COALESCE(Actual_Aug_2026,0)))
+          / NULLIF(SUM(COALESCE(Actual_Aug_2026,0)),0) * 100, 1) AS Bias_Pct
   FROM lag1_data WHERE Country_Name = 'China'
 
-CAVEAT to mention when relevant: the company Power BI "n-3 / Lag 3" report
-actually uses a snapshot taken 4 months before the target month (Aera Lag-4),
-which this table does not hold — so numbers here (true Lag-3) can differ
-somewhat from that report. Say which lag you used.
+Convention note to include when reporting lag accuracy: state that the figures
+use the n-3 convention (consensus frozen 4 calendar months before the target,
+matching the Power BI accuracy report); Fcst3M (3 calendar months) and Fcst1M
+are available if the user asks for a different lag. Exact PBI reconciliation
+can still drift slightly in some months because the PBI lock date follows the
+IBP review calendar rather than a fixed calendar offset.
 """
 
 SYSTEM_PROMPT = f"""\
