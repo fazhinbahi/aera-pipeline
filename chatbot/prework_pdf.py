@@ -611,7 +611,9 @@ def build_prework_pdf(
             if fc_c not in acc.columns or act_c not in acc.columns:
                 continue
             sub = acc[[fc_c, act_c]].copy().fillna(0)
-            sub = sub[sub[act_c] > 0]
+            # keep rows with forecast OR actuals — dropping forecast-only rows
+            # hides pure over-forecast error from wMAPE
+            sub = sub[(sub[act_c] > 0) | (sub[fc_c] > 0)]
             if sub.empty:
                 continue
             tot_act  = sub[act_c].sum()
@@ -658,11 +660,15 @@ def build_prework_pdf(
             act_c = f"Actual_{acc_last}_2026"
 
             if fc_c in acc.columns and act_c in acc.columns:
-                top10 = (acc.groupby("Sub_Brand_Description")
-                           .agg(IBP=(fc_c, "sum"), Actuals=(act_c, "sum"))
+                acc_w = acc[["Sub_Brand_Description", fc_c, act_c]].copy().fillna(0)
+                # absolute error must be summed at row (customer x SKU) grain —
+                # netting to sub-brand first collapses wMAPE into |Bias|
+                acc_w["_abs_err"] = (acc_w[fc_c] - acc_w[act_c]).abs()
+                top10 = (acc_w.groupby("Sub_Brand_Description")
+                           .agg(IBP=(fc_c, "sum"), Actuals=(act_c, "sum"),
+                                Error=("_abs_err", "sum"))
                            .reset_index())
                 top10 = top10[top10["Actuals"] > 0]
-                top10["Error"] = (top10["IBP"] - top10["Actuals"]).abs()
                 top10["MAPE_v"] = top10["Error"] / top10["Actuals"] * 100
                 top10["Bias_v"] = (top10["IBP"] - top10["Actuals"]) / top10["Actuals"] * 100
                 top10 = top10.nlargest(10, "Actuals")

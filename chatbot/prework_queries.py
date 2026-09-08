@@ -113,21 +113,56 @@ def fetch_accuracy(country: str, sub_segment: str,
     )
     customer_clause = "AND l.Customer_Number IN UNNEST(@customer_numbers)" if customer_numbers else ""
     q = f"""
+        WITH ca_cust AS (
+            -- customer-level attributes within the requested market
+            SELECT Material_Number, Country_Name, Customer_Number,
+                   ANY_VALUE(Sub_Brand_Description) AS Sub_Brand_Description,
+                   ANY_VALUE(UPC_Code)              AS UPC_Code,
+                   ANY_VALUE(Brand_Family)          AS Brand_Family
+            FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
+            WHERE Country_Name = @country AND Sub_Segments = @sub_segment
+            GROUP BY 1, 2, 3
+        ),
+        ca_any AS (
+            -- customers known in ANY sub-segment (to exclude e.g. GTR customers
+            -- from an IMC market rather than adopting them as orphans)
+            SELECT DISTINCT Material_Number, Country_Name, Customer_Number
+            FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
+            WHERE Country_Name = @country
+        ),
+        ca_mat AS (
+            -- material-level fallback attributes within the requested market
+            SELECT Material_Number, Country_Name,
+                   ANY_VALUE(Sub_Brand_Description) AS Sub_Brand_Description,
+                   ANY_VALUE(UPC_Code)              AS UPC_Code,
+                   ANY_VALUE(Brand_Family)          AS Brand_Family
+            FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
+            WHERE Country_Name = @country AND Sub_Segments = @sub_segment
+            GROUP BY 1, 2
+        )
         SELECT
             l.Material_Number,
             l.Country_Name,
             l.Customer_Number,
-            c.Sub_Brand_Description,
-            c.UPC_Code,
-            c.Brand_Family,
+            COALESCE(c.Sub_Brand_Description, m.Sub_Brand_Description) AS Sub_Brand_Description,
+            COALESCE(c.UPC_Code,              m.UPC_Code)              AS UPC_Code,
+            COALESCE(c.Brand_Family,          m.Brand_Family)          AS Brand_Family,
             {lag_cols}
         FROM `{GCP_PROJECT}.{DATASET}.lag1_data` l
-        JOIN `{GCP_PROJECT}.{DATASET}.customer_analysis` c
+        LEFT JOIN ca_cust c
           ON  l.Material_Number = c.Material_Number
           AND l.Country_Name    = c.Country_Name
           AND l.Customer_Number = c.Customer_Number
+        LEFT JOIN ca_any x
+          ON  l.Material_Number = x.Material_Number
+          AND l.Country_Name    = x.Country_Name
+          AND l.Customer_Number = x.Customer_Number
+        LEFT JOIN ca_mat m
+          ON  l.Material_Number = m.Material_Number
+          AND l.Country_Name    = m.Country_Name
         WHERE l.Country_Name = @country
-          AND c.Sub_Segments = @sub_segment
+          AND (c.Customer_Number IS NOT NULL
+               OR (x.Customer_Number IS NULL AND m.Material_Number IS NOT NULL))
           {customer_clause}
     """
     params = [
