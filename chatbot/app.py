@@ -58,12 +58,13 @@ with st.sidebar:
         "**Available tables**\n"
         "- `customer_analysis` — order history, AdjFC, Budget, SO\n"
         "- `stat_3pd_forecast` — SF / 3PD / Source FC\n"
+        "- `lag1_data` — Lag-1/Lag-3 FA/FB vs actuals (2026)\n"
     )
     st.divider()
     st.markdown(
         "**Example questions**\n"
         "- *Prepare analysis for Australia market*\n"
-        "- *Where do SF and consensus disagree most in Japan?*\n"
+        "- *Give me China Lag-3 FA/FB for August*\n"
         "- *Compare SF vs 3PD for APAC IMC in Aug 2026*\n"
         "- *Top 10 customers by volume in UK 2025*\n"
         "- *What is the YTD growth for EMEA Enterprise?*\n"
@@ -189,7 +190,8 @@ if not st.session_state.chat_display:
             "**EMEA** and **APAC** in real time.\n\n"
             "**Here's what I can do:**\n\n"
             "- 📦 **Volume & actuals** — YTD sales, YoY growth, top customers by market\n"
-            "- 🎯 **Plan alignment** — AdjFC vs Budget vs PMCF, confirmed SO vs plan\n"
+            "- 🎯 **Forecast accuracy** — Lag-1/Lag-3 WMAPE & Bias vs actuals (2026)\n"
+            "- 📐 **Plan alignment** — AdjFC vs Budget vs PMCF, confirmed SO vs plan\n"
             "- 📊 **Forecast comparison** — AdjFC vs SF vs 3PD vs Source Forecast\n"
             "- 🚨 **Deviation flags** — which sub-brands are over/under plan and by how much\n"
             "- 📋 **Pre-work PDF** — generate a full pre-alignment document for any market "

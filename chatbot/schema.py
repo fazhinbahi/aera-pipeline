@@ -43,7 +43,7 @@ _ACTUALS_CY_LINE = (
 )
 
 TABLE_DESCRIPTIONS = f"""\
-You have access to two BigQuery tables in project `euphoric-hull-442815-n8`,
+You have access to three BigQuery tables in project `euphoric-hull-442815-n8`,
 dataset `aera_demand_planning`. All volume figures are in 9LC (9-liter cases),
 the standard spirits industry unit. Markets are EMEA and APAC, plus GTR
 (Global Travel Retail — includes 'US GTR', whose locations span USA, Mexico,
@@ -67,8 +67,8 @@ Grain   : Customer × Material × Country × Sub-Segment
 Rows    : ~18,440
 Use for : Customer-level order history, adjusted forecast (AdjFC), Budget,
           confirmed orders (SO), deviation from plan, YoY comparisons.
-          NOTE — there are NO precomputed MAPE/accuracy columns; accuracy
-          questions need the lag data described at the bottom of this prompt.
+          NOTE — there are NO precomputed MAPE/accuracy columns here;
+          accuracy questions use lag1_data (Table 3).
 
 Dimension columns:
   Customer_Number, Customer_Name, Material_Number, Country_Name,
@@ -135,16 +135,49 @@ Metric columns (all volumes in 9LC):
   • Source Forecast      : SrcFC_Jan_2026 → SrcFC_Dec_2027      (24 cols)
 
 ─────────────────────────────────────────────────────────────────
-NOT YET AVAILABLE: lag forecast accuracy (FA / FB / MAPE / WMAPE / Bias)
+TABLE 3: lag1_data
 ─────────────────────────────────────────────────────────────────
-There is currently NO table with lag snapshots (Lag-1/Lag-3/Lag-4 forecasts
-frozen N months before each period), so questions like "China Lag-3 FA/FB"
-or "which SKUs have the highest MAPE" CANNOT be answered yet — the dataset
-is being added. When asked, say exactly that in one sentence, then offer
-the closest available alternative: current SF vs AdjFC vs confirmed SO
-comparison for the same scope, or actuals vs PMCF/Budget deviation.
-Never invent accuracy numbers and never approximate MAPE from tables that
-lack lag snapshots.
+Grain   : Material × Country × Customer
+Rows    : ~9,999
+Use for : Forecast accuracy (FA/WMAPE), forecast bias (FB), Lag-1/Lag-3
+          forecast vs what actually sold. Self-contained — it carries its
+          own Actual_ columns, so NO join is needed for accuracy maths.
+
+Dimension columns:
+  Material_Number, Country_Name, Customer_Number
+  (no Sub_Segments/Region here — JOIN customer_analysis on
+   Material_Number + Country_Name + Customer_Number if you need
+   brand, sub-segment or region attributes.)
+
+Metric columns — coverage is Jan 2026 → Aug 2026 (closed 2026 months;
+2024/2025 lag snapshots are NOT available). Use get_schema for the
+current column list.
+    Fcst1M_<Mon>_2026 = Adjusted Forecast frozen 1 month before that month (Lag-1)
+    Fcst3M_<Mon>_2026 = Adjusted Forecast frozen 3 months before that month (Lag-3)
+    Actual_<Mon>_2026 = confirmed sales for that month
+
+## How to compute accuracy metrics (volume-weighted, the standard here)
+For a chosen scope (country/sub-brand/SKU/month range):
+  WMAPE % = SUM(ABS(Fcst - Actual)) / NULLIF(SUM(Actual),0) * 100
+  FA %    = 100 - WMAPE   (report as FA; can go negative when WMAPE > 100)
+  FB/Bias % = (SUM(Fcst) - SUM(Actual)) / NULLIF(SUM(Actual),0) * 100
+Compute SUMs over the scope FIRST, then the ratio — never average
+row-level percentages (that is simple MAPE, only use it if explicitly asked).
+
+Example — China Lag-3 FA/FB for Aug 2026:
+  SELECT
+    ROUND(SUM(Fcst3M_Aug_2026)) AS Lag3_Fcst,
+    ROUND(SUM(Actual_Aug_2026)) AS Actuals,
+    ROUND(SUM(ABS(Fcst3M_Aug_2026 - Actual_Aug_2026))
+          / NULLIF(SUM(Actual_Aug_2026),0) * 100, 1) AS WMAPE_Pct,
+    ROUND((SUM(Fcst3M_Aug_2026) - SUM(Actual_Aug_2026))
+          / NULLIF(SUM(Actual_Aug_2026),0) * 100, 1) AS Bias_Pct
+  FROM lag1_data WHERE Country_Name = 'China'
+
+CAVEAT to mention when relevant: the company Power BI "n-3 / Lag 3" report
+actually uses a snapshot taken 4 months before the target month (Aera Lag-4),
+which this table does not hold — so numbers here (true Lag-3) can differ
+somewhat from that report. Say which lag you used.
 """
 
 SYSTEM_PROMPT = f"""\
@@ -222,12 +255,13 @@ that actually exist and say so.
 - Monthly breakdowns: ALWAYS show all 12 months (Jan through Dec). Never truncate or use ellipsis.
 - 2 to 50 rows: present as a clean markdown table.
 - 50+ rows: summarise key insights (top 5, totals, trends) — full data shown separately.
-- Market analysis requests: query both tables and structure answer with sections:
+- Market analysis requests: query all 3 tables and structure answer with sections:
     1. Volume Performance (actuals YTD vs SPLY)
     2. Forecast Overview (AdjFC, SF, 3PD for upcoming months)
-    3. Plan Alignment (AdjFC vs Budget vs PMCF; confirmed SO vs AdjFC for open months)
-    4. Top SKUs by volume
-    5. Key risks and observations
+    3. Forecast Accuracy (Lag-1/Lag-3 WMAPE and Bias from lag1_data)
+    4. Plan Alignment (AdjFC vs Budget vs PMCF; confirmed SO vs AdjFC for open months)
+    5. Top SKUs by volume
+    6. Key risks and observations
 
 ## Tone
 - Be concise and analytical — like a seasoned demand planner, not a generic chatbot.

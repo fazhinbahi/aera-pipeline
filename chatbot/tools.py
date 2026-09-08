@@ -16,7 +16,7 @@ DATASET      = "aera_demand_planning"
 GCLOUD_ACC   = "jfaizan07@gmail.com"
 MAX_ROWS     = 2000   # hard cap on rows returned to agent
 
-VALID_TABLES = {"customer_analysis", "stat_3pd_forecast"}
+VALID_TABLES = {"customer_analysis", "stat_3pd_forecast", "lag1_data"}
 
 
 def _bq_client() -> bigquery.Client:

@@ -47,7 +47,8 @@ TOOLS = [
             "Returns up to 2,000 rows. Always call get_schema first to confirm "
             "exact column names. Use fully qualified table names:\n"
             "  `euphoric-hull-442815-n8.aera_demand_planning.customer_analysis`\n"
-            "  `euphoric-hull-442815-n8.aera_demand_planning.stat_3pd_forecast`"
+            "  `euphoric-hull-442815-n8.aera_demand_planning.stat_3pd_forecast`\n"
+            "  `euphoric-hull-442815-n8.aera_demand_planning.lag1_data`"
         ),
         "input_schema": {
             "type": "object",
@@ -76,7 +77,7 @@ TOOLS = [
             "properties": {
                 "table_name": {
                     "type": "string",
-                    "enum": ["customer_analysis", "stat_3pd_forecast"],
+                    "enum": ["customer_analysis", "stat_3pd_forecast", "lag1_data"],
                     "description": "Table to inspect.",
                 },
             },
