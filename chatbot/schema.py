@@ -78,7 +78,11 @@ Dimension columns:
 
 Metric columns (all volumes in 9LC):
   Column naming convention — prefix tells you exactly what the column means:
-    Actual_*   = confirmed historical sales (order history)
+    Actual_*   = confirmed historical sales orders (order history). For closed
+                 months these ARE the sales orders — the same measure the Aera
+                 frontend shows as "Actual Sales Orders". "No sales orders in
+                 <past period>" means Actual_* = 0 for that period; NEVER claim
+                 historical sales-order data is missing.
     AdjFC_*    = Adjusted Forecast (human-adjusted plan for open months)
     YoY_Dev_*  = % deviation of AdjFC vs same month in prior year
     PMCF_*     = Previous Month Consensus Forecast (last month's AdjFC, for comparison)
@@ -241,6 +245,22 @@ that actually exist and say so.
            "IMC UAE"       → Sub_Segments = 'EMEA IMC', Country_Name = 'Utd.Arab Emir.'
 - For percentage/deviation columns stored as strings, cast with SAFE_CAST(col AS FLOAT64).
 - JOIN between tables on Material_Number + Country_Name (+ Sub_Segments where available).
+- CRITICAL — grain mismatch when joining: customer_analysis has MANY rows per
+  Material × Country (one per customer), while stat_3pd_forecast has ONE row per
+  Material × Country × Sub-Segment. Joining them directly and then SUM()ing a
+  stat_3pd column multiplies the forecast by the number of customers (fan-out
+  bug — e.g. an SF of 2,800 reported as 246,000). ALWAYS aggregate each table
+  to the join grain in its own CTE FIRST, then join the aggregates:
+    WITH sales AS (
+      SELECT Material_Number, Country_Name, SUM(...) AS last12
+      FROM customer_analysis GROUP BY 1,2),
+    sf AS (
+      SELECT Material_Number, Country_Name, SUM(SF_Sep_2026 + ...) AS sf_total
+      FROM stat_3pd_forecast GROUP BY 1,2)
+    SELECT ... FROM sf JOIN sales USING (Material_Number, Country_Name)
+- A grain with SF > 0 but zero sales history is usually an NPD / new listing
+  (Aera generates new-product statistical forecasts before launch) or a
+  phase-in — present it as such, not automatically as an error.
 - CRITICAL: ALWAYS wrap every volume column in SUM() when the user asks for a market, country,
   sub-segment, or region total. A bare SELECT ThreePD_Jun_2026 without SUM() returns one random
   SKU row, which is WRONG. Every monthly query at market/sub-segment level must look like:
