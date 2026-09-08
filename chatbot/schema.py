@@ -2,7 +2,40 @@
 Table schemas and system prompt for the demand planning agent.
 """
 
-TABLE_DESCRIPTIONS = """\
+import datetime as _dt
+
+_TODAY = _dt.date.today()
+_CURRENT_YEAR = _TODAY.year
+_CURRENT_MONTH = _TODAY.strftime("%B")
+_CUR_MON = _TODAY.strftime("%b")
+
+# Last closed month = previous calendar month (actuals exist up to here)
+_LAST_CLOSED = _TODAY.replace(day=1) - _dt.timedelta(days=1)
+_LC_MON  = _LAST_CLOSED.strftime("%b")
+_LC_YEAR = _LAST_CLOSED.year
+
+# Month lists for the current year (empty actuals list in January)
+_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+if _LC_YEAR == _CURRENT_YEAR:
+    _CLOSED_THIS_YEAR = _MONTH_ABBR[:_LAST_CLOSED.month]
+else:
+    _CLOSED_THIS_YEAR = []
+_OPEN_THIS_YEAR = _MONTH_ABBR[_TODAY.month - 1:]
+
+# Trailing-12-closed-months window: starts in the current month name, one year back
+# (e.g. today Sep 2026 -> window Sep 2025 -> Aug 2026); in January the window is
+# simply Jan -> Dec of the just-closed year.
+_T12_START_MON  = _CUR_MON
+_T12_START_YEAR = _LC_YEAR if _TODAY.month == 1 else _LC_YEAR - 1
+
+_ACTUALS_CY_LINE = (
+    f"Actual_{_CLOSED_THIS_YEAR[0]}_{_CURRENT_YEAR} → Actual_{_CLOSED_THIS_YEAR[-1]}_{_CURRENT_YEAR}  (closed months only)"
+    if _CLOSED_THIS_YEAR else
+    f"none yet — no {_CURRENT_YEAR} month is closed; latest actuals are Actual_Dec_{_LC_YEAR}"
+)
+
+TABLE_DESCRIPTIONS = f"""\
 You have access to three BigQuery tables in project `euphoric-hull-442815-n8`,
 dataset `aera_demand_planning`. All volume figures are in 9LC (9-liter cases),
 the standard spirits industry unit. Markets are EMEA and APAC.
@@ -10,7 +43,7 @@ the standard spirits industry unit. Markets are EMEA and APAC.
 IMPORTANT — available years at a glance:
   • 2024 actuals  ✓ (full year, confirmed sales)
   • 2025 actuals  ✓ (full year, confirmed sales)
-  • 2026 actuals  ✓ (Jan–May confirmed; Jun–Dec = AdjFC open forecast)
+  • {_CURRENT_YEAR} actuals  ✓ (Jan–{_LC_MON} confirmed; {_CUR_MON}–Dec = AdjFC open forecast)
   • 2027 AdjFC    ✓ (full year adjusted forecast)
   • 2028 AdjFC    ✓ (Jan–Jul planned; Aug–Dec = 0, not yet entered in Aera)
   Data for ALL of these years is queryable right now in customer_analysis.
@@ -45,16 +78,16 @@ Metric columns (all volumes in 9LC):
 
   • 2024 actuals     : Actual_Jan_2024 → Actual_Dec_2024  (Actual_Total_2024 for annual)
   • 2025 actuals     : Actual_Jan_2025 → Actual_Dec_2025  (Actual_Total_2025 for annual)
-  • 2026 actuals     : Actual_Jan_2026 → Actual_May_2026  (closed months only)
-  • 2026 AdjFC       : AdjFC_Jun_2026 → AdjFC_Dec_2026   (open/forecast months)
-  • 2026 annual      : Total_2026  (actuals Jan–May + AdjFC Jun–Dec combined)
+  • {_CURRENT_YEAR} actuals     : {_ACTUALS_CY_LINE}
+  • {_CURRENT_YEAR} AdjFC       : AdjFC_{_CUR_MON}_{_CURRENT_YEAR} → AdjFC_Dec_{_CURRENT_YEAR}   (open/forecast months)
+  • {_CURRENT_YEAR} annual      : Total_{_CURRENT_YEAR}  (actuals Jan–{_LC_MON} + AdjFC {_CUR_MON}–Dec combined)
   • 2027 AdjFC       : AdjFC_Jan_2027 → AdjFC_Dec_2027  (AdjFC_Total_2027 for annual)
   • 2028 AdjFC       : AdjFC_Jan_2028 → AdjFC_Jul_2028  (AdjFC_Total_2028 for annual;
                        Aug–Dec 2028 = 0, not yet planned in Aera)
-  • Confirmed Orders : SO_Jun_2026 → SO_Dec_2026  ← booked customer orders, not a forecast
+  • Confirmed Orders : SO_{_CUR_MON}_{_CURRENT_YEAR} → SO_Dec_{_CURRENT_YEAR}  ← booked customer orders, not a forecast
   • PMCF             : PMCF_Jan_2026 → PMCF_Dec_2026
   • YTD              : YTD_2025, YTD_2026, YTD_YoY_Pct (YoY % change), FC_vs_SPLY
-  • Monthly dev %    : YoY_Dev_Jun_2026 → YoY_Dev_Dec_2026
+  • Monthly dev %    : YoY_Dev_{_CUR_MON}_{_CURRENT_YEAR} → YoY_Dev_Dec_{_CURRENT_YEAR}
   • Quarterly dev %  : YoY_Dev_Q1, YoY_Dev_Q2, YoY_Dev_Q3, YoY_Dev_Q4
   • vs avg           : FC_vs_Last_6M_Avg
 
@@ -137,11 +170,6 @@ Example — lag1 vs actuals for March 2026 by country:
   ORDER BY ABS(SUM(l.Lag1_Mar_2026) - SUM(c.Mar_2026)) DESC
 """
 
-import datetime as _dt
-_TODAY = _dt.date.today()
-_CURRENT_YEAR = _TODAY.year
-_CURRENT_MONTH = _TODAY.strftime("%B")
-
 SYSTEM_PROMPT = f"""\
 You are a demand planning analyst assistant for Becle (Jose Cuervo spirits group),
 supporting the EMEA and APAC IBP (Integrated Business Planning) process.
@@ -149,11 +177,28 @@ supporting the EMEA and APAC IBP (Integrated Business Planning) process.
 ## Current date context
 Today is {_TODAY.strftime("%d %B %Y")}. The current year is {_CURRENT_YEAR}.
 - "This year" = {_CURRENT_YEAR}
-- "Actuals so far this year" or "YTD actuals" = Jan_{_CURRENT_YEAR} through May_{_CURRENT_YEAR}
-  (May is the latest month with confirmed actuals; Jun {_CURRENT_YEAR} is the current open month)
+- "Actuals so far this year" or "YTD actuals" = Jan_{_CURRENT_YEAR} through {_LC_MON}_{_CURRENT_YEAR}
+  ({_LC_MON} {_LC_YEAR} is the latest closed month with confirmed actuals;
+   {_CURRENT_MONTH} {_CURRENT_YEAR} is the current open month)
 - "Last year" or "SPLY" = {_CURRENT_YEAR - 1}
-- "Upcoming months" or "forecast period" = Jun_{_CURRENT_YEAR} through Dec_{_CURRENT_YEAR}
+- "Upcoming months" or "forecast period" = {_CUR_MON}_{_CURRENT_YEAR} through Dec_{_CURRENT_YEAR}
 Always use the correct year columns — never compare 2026 forecasts against 2024 actuals.
+The table snapshot can occasionally lag the calendar: get_schema output is ground truth.
+A month that exists as an Actual_ column is closed; a month that exists only as
+AdjFC_/SO_ is open. If a month you expect as Actual_ is missing, use the columns
+that actually exist and say so.
+
+## Interpreting time periods (IMPORTANT)
+- "Top selling", "best sellers", "top SKUs/customers" with NO period stated
+  → default to {_CURRENT_YEAR} YTD using ALL closed months
+  (Actual_Jan_{_CURRENT_YEAR} + … + Actual_{_LC_MON}_{_CURRENT_YEAR}). Never stop at an
+  earlier month, and never silently switch to a prior full year.
+- Only use full-year {_CURRENT_YEAR - 1} when the user explicitly asks for {_CURRENT_YEAR - 1} or "last year".
+- ALWAYS state the exact period used in your answer title, e.g.
+  "Top 10 SKUs — Japan, {_CURRENT_YEAR} YTD (Jan–{_LC_MON})", and offer the alternative period
+  in one closing sentence.
+- "Last 12 months" = the 12 most recent closed months ({_T12_START_MON} {_T12_START_YEAR} → {_LC_MON} {_LC_YEAR}),
+  combining Actual_ columns across the year boundary.
 
 {TABLE_DESCRIPTIONS}
 
