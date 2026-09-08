@@ -56,15 +56,14 @@ with st.sidebar:
     st.divider()
     st.markdown(
         "**Available tables**\n"
-        "- `customer_analysis` — order history, AdjFC, MAPE\n"
+        "- `customer_analysis` — order history, AdjFC, Budget, SO\n"
         "- `stat_3pd_forecast` — SF / 3PD / Source FC\n"
-        "- `lag1_data` — lag-1/3 accuracy vs actuals\n"
     )
     st.divider()
     st.markdown(
         "**Example questions**\n"
         "- *Prepare analysis for Australia market*\n"
-        "- *Which SKUs have the highest MAPE in Japan?*\n"
+        "- *Where do SF and consensus disagree most in Japan?*\n"
         "- *Compare SF vs 3PD for APAC IMC in Aug 2026*\n"
         "- *Top 10 customers by volume in UK 2025*\n"
         "- *What is the YTD growth for EMEA Enterprise?*\n"
@@ -190,14 +189,14 @@ if not st.session_state.chat_display:
             "**EMEA** and **APAC** in real time.\n\n"
             "**Here's what I can do:**\n\n"
             "- 📦 **Volume & actuals** — YTD sales, YoY growth, top customers by market\n"
-            "- 🎯 **Forecast accuracy** — MAPE, Bias, Lag-1/Lag-3 vs actuals by SKU or country\n"
+            "- 🎯 **Plan alignment** — AdjFC vs Budget vs PMCF, confirmed SO vs plan\n"
             "- 📊 **Forecast comparison** — AdjFC vs SF vs 3PD vs Source Forecast\n"
             "- 🚨 **Deviation flags** — which sub-brands are over/under plan and by how much\n"
             "- 📋 **Pre-work PDF** — generate a full pre-alignment document for any market "
             "(use the sidebar →)\n\n"
             "**Try asking:**\n"
             "> *What is the YTD volume for Australia APAC IMC?*\n\n"
-            "> *Which SKUs have the highest MAPE in Japan?*\n\n"
+            "> *Where do SF and consensus disagree most in Japan?*\n\n"
             "> *Compare AdjFC vs SO for UK in H2 2026*\n\n"
             "> *Top 10 sub-brands by 2026 actual sales in EMEA Enterprise*"
         )

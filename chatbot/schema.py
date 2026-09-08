@@ -23,6 +23,13 @@ else:
     _CLOSED_THIS_YEAR = []
 _OPEN_THIS_YEAR = _MONTH_ABBR[_TODAY.month - 1:]
 
+# AdjFC rolling horizon: 24 months starting at the current open month,
+# so the last planned month = last-closed month name, two years forward
+# (e.g. Sep 2026 cycle -> horizon Sep 2026..Aug 2028). Later months exist
+# as columns but hold 0.
+_HORIZON_END_MON  = _LC_MON
+_HORIZON_END_YEAR = _LC_YEAR + 2
+
 # Trailing-12-closed-months window: starts in the current month name, one year back
 # (e.g. today Sep 2026 -> window Sep 2025 -> Aug 2026); in January the window is
 # simply Jan -> Dec of the just-closed year.
@@ -36,16 +43,19 @@ _ACTUALS_CY_LINE = (
 )
 
 TABLE_DESCRIPTIONS = f"""\
-You have access to three BigQuery tables in project `euphoric-hull-442815-n8`,
+You have access to two BigQuery tables in project `euphoric-hull-442815-n8`,
 dataset `aera_demand_planning`. All volume figures are in 9LC (9-liter cases),
-the standard spirits industry unit. Markets are EMEA and APAC.
+the standard spirits industry unit. Markets are EMEA and APAC, plus GTR
+(Global Travel Retail — includes 'US GTR', whose locations span USA, Mexico,
+Guam and others).
 
 IMPORTANT — available years at a glance:
   • 2024 actuals  ✓ (full year, confirmed sales)
   • 2025 actuals  ✓ (full year, confirmed sales)
   • {_CURRENT_YEAR} actuals  ✓ (Jan–{_LC_MON} confirmed; {_CUR_MON}–Dec = AdjFC open forecast)
   • 2027 AdjFC    ✓ (full year adjusted forecast)
-  • 2028 AdjFC    ✓ (Jan–Jul planned; Aug–Dec = 0, not yet entered in Aera)
+  • 2028 AdjFC    ✓ (rolling 24-month horizon: planned through {_HORIZON_END_MON} {_HORIZON_END_YEAR};
+                     later 2028 month columns exist but hold 0 — not yet planned in Aera)
   Data for ALL of these years is queryable right now in customer_analysis.
   When asked whether data exists for a year, call get_schema("customer_analysis")
   to confirm exact column names before answering.
@@ -54,9 +64,11 @@ IMPORTANT — available years at a glance:
 TABLE 1: customer_analysis
 ─────────────────────────────────────────────────────────────────
 Grain   : Customer × Material × Country × Sub-Segment
-Rows    : ~17,943
-Use for : Customer-level order history, adjusted forecast (AdjFC),
-          MAPE accuracy scores, deviation from plan, YoY comparisons.
+Rows    : ~18,440
+Use for : Customer-level order history, adjusted forecast (AdjFC), Budget,
+          confirmed orders (SO), deviation from plan, YoY comparisons.
+          NOTE — there are NO precomputed MAPE/accuracy columns; accuracy
+          questions need the lag data described at the bottom of this prompt.
 
 Dimension columns:
   Customer_Number, Customer_Name, Material_Number, Country_Name,
@@ -70,6 +82,8 @@ Metric columns (all volumes in 9LC):
     AdjFC_*    = Adjusted Forecast (human-adjusted plan for open months)
     YoY_Dev_*  = % deviation of AdjFC vs same month in prior year
     PMCF_*     = Previous Month Consensus Forecast (last month's AdjFC, for comparison)
+    Budget_*   = annual Budget plan for {_CURRENT_YEAR} (Budget_Jan_{_CURRENT_YEAR} → Budget_Dec_{_CURRENT_YEAR},
+                 plus Budget_Total_{_CURRENT_YEAR}) — the financial plan to compare AdjFC/actuals against
     SO_*       = Confirmed Sales Orders for future open months — these are REAL committed
                  orders already placed by customers and sitting in the system. They represent
                  actual demand that has been booked, NOT a forecast. Use SO columns to see
@@ -82,8 +96,9 @@ Metric columns (all volumes in 9LC):
   • {_CURRENT_YEAR} AdjFC       : AdjFC_{_CUR_MON}_{_CURRENT_YEAR} → AdjFC_Dec_{_CURRENT_YEAR}   (open/forecast months)
   • {_CURRENT_YEAR} annual      : Total_{_CURRENT_YEAR}  (actuals Jan–{_LC_MON} + AdjFC {_CUR_MON}–Dec combined)
   • 2027 AdjFC       : AdjFC_Jan_2027 → AdjFC_Dec_2027  (AdjFC_Total_2027 for annual)
-  • 2028 AdjFC       : AdjFC_Jan_2028 → AdjFC_Jul_2028  (AdjFC_Total_2028 for annual;
-                       Aug–Dec 2028 = 0, not yet planned in Aera)
+  • 2028 AdjFC       : AdjFC_Jan_2028 → AdjFC_Dec_2028  (AdjFC_Total_2028 for annual;
+                       planned through {_HORIZON_END_MON} {_HORIZON_END_YEAR}, months after that are 0)
+  • {_CURRENT_YEAR} Budget      : Budget_Jan_{_CURRENT_YEAR} → Budget_Dec_{_CURRENT_YEAR}, Budget_Total_{_CURRENT_YEAR}
   • Confirmed Orders : SO_{_CUR_MON}_{_CURRENT_YEAR} → SO_Dec_{_CURRENT_YEAR}  ← booked customer orders, not a forecast
   • PMCF             : PMCF_Jan_2026 → PMCF_Dec_2026
   • YTD              : YTD_2025, YTD_2026, YTD_YoY_Pct (YoY % change), FC_vs_SPLY
@@ -91,14 +106,18 @@ Metric columns (all volumes in 9LC):
   • Quarterly dev %  : YoY_Dev_Q1, YoY_Dev_Q2, YoY_Dev_Q3, YoY_Dev_Q4
   • vs avg           : FC_vs_Last_6M_Avg
 
-Note: BQ column names are sanitised (spaces→_, special chars removed, leading
-digits prefixed with col_). Use get_schema to get exact column names before writing SQL.
+Data types: all volume columns are FLOAT64. These percentage/deviation columns
+are STRING holding plain numbers WITHOUT a % sign (e.g. '221.43'), so wrap them
+in SAFE_CAST(col AS FLOAT64): YTD_YoY_Pct, FC_vs_SPLY, YoY_Dev_<Mon>_<Year>,
+YoY_Dev_Q1..Q4, FC_vs_Last_6M_Avg. The Volume dimension column is the unit size
+in litres stored as STRING (e.g. '0.7') — it is NOT a sales volume.
+Use get_schema to confirm exact column names before writing SQL.
 
 ─────────────────────────────────────────────────────────────────
 TABLE 2: stat_3pd_forecast
 ─────────────────────────────────────────────────────────────────
 Grain   : Material × Country × Sub-Segment (no customer dimension)
-Rows    : ~5,587
+Rows    : ~2,271
 Use for : SF vs 3PD vs Source Forecast comparison, 2026/2027 planning,
           consensus analysis, uplift (3PD minus SF).
 
@@ -116,58 +135,16 @@ Metric columns (all volumes in 9LC):
   • Source Forecast      : SrcFC_Jan_2026 → SrcFC_Dec_2027      (24 cols)
 
 ─────────────────────────────────────────────────────────────────
-TABLE 3: lag1_data
+NOT YET AVAILABLE: lag forecast accuracy (FA / FB / MAPE / WMAPE / Bias)
 ─────────────────────────────────────────────────────────────────
-Grain   : Customer × Material × Country
-Rows    : ~8,387
-Use for : Forecast accuracy — comparing what was forecasted N months
-          before a period against what actually sold in that period.
-
-Dimension columns:
-  Material_Number, Country_Name, Customer_Number
-
-Metric columns:
-  Column naming convention:
-    Fcst1M_*  = forecast made exactly 1 month before the period (Lag-1)
-    Fcst3M_*  = forecast made exactly 3 months before the period (Lag-3)
-    Actual_*  = confirmed actual sales for that month
-
-  • Fcst1M_Jan_2026 = forecast made in Dec 2025 for Jan 2026
-  • Fcst1M_Feb_2026 = forecast made in Jan 2026 for Feb 2026
-  • Fcst1M_Mar_2026 = forecast made in Feb 2026 for Mar 2026
-  • Fcst1M_Apr_2026 = forecast made in Mar 2026 for Apr 2026
-  • Fcst1M_May_2026 = forecast made in Apr 2026 for May 2026
-  • Fcst3M_Jan_2026 = forecast made in Oct 2025 for Jan 2026
-  • Fcst3M_Feb_2026 = forecast made in Nov 2025 for Feb 2026
-  • Fcst3M_Mar_2026 = forecast made in Dec 2025 for Mar 2026
-  • Fcst3M_Apr_2026 = forecast made in Jan 2026 for Apr 2026
-  • Fcst3M_May_2026 = forecast made in Feb 2026 for May 2026
-  • Actual_Jan_2026 → Actual_May_2026  (confirmed sales for the same periods)
-
-## How to answer lag1 comparison questions
-
-When the user asks "compare lag1 forecast vs actual sales for [month]":
-1. Use lag1_data for the lag forecast column (e.g. Lag1_Mar_2026 for March)
-2. Use customer_analysis for actuals (e.g. Mar_2026) — JOIN on
-   Material_Number + Country_Name + Customer_Number
-3. Aggregate with SUM() at whatever grain the user asks (country, sub-segment, SKU)
-4. MAPE = ROUND(AVG(ABS(Lag1 - Actual) / NULLIF(Actual, 0) * 100), 1)
-
-Example — lag1 vs actuals for March 2026 by country:
-  SELECT
-      l.Country_Name,
-      ROUND(SUM(l.Lag1_Mar_2026))  AS Lag1_Forecast,
-      ROUND(SUM(c.Mar_2026))       AS Actuals,
-      ROUND(SUM(l.Lag1_Mar_2026) - SUM(c.Mar_2026)) AS Variance,
-      ROUND((SUM(l.Lag1_Mar_2026) - SUM(c.Mar_2026))
-            / NULLIF(SUM(c.Mar_2026), 0) * 100, 1)  AS Variance_Pct
-  FROM lag1_data l
-  JOIN customer_analysis c
-    ON l.Material_Number = c.Material_Number
-   AND l.Country_Name    = c.Country_Name
-   AND l.Customer_Number = c.Customer_Number
-  GROUP BY l.Country_Name
-  ORDER BY ABS(SUM(l.Lag1_Mar_2026) - SUM(c.Mar_2026)) DESC
+There is currently NO table with lag snapshots (Lag-1/Lag-3/Lag-4 forecasts
+frozen N months before each period), so questions like "China Lag-3 FA/FB"
+or "which SKUs have the highest MAPE" CANNOT be answered yet — the dataset
+is being added. When asked, say exactly that in one sentence, then offer
+the closest available alternative: current SF vs AdjFC vs confirmed SO
+comparison for the same scope, or actuals vs PMCF/Budget deviation.
+Never invent accuracy numbers and never approximate MAPE from tables that
+lack lag snapshots.
 """
 
 SYSTEM_PROMPT = f"""\
@@ -207,11 +184,17 @@ that actually exist and say so.
 - Use fully qualified table names:
     euphoric-hull-442815-n8.aera_demand_planning.customer_analysis
     euphoric-hull-442815-n8.aera_demand_planning.stat_3pd_forecast
-    euphoric-hull-442815-n8.aera_demand_planning.lag1_data
 - Country names are stored as-is (e.g. 'Australia', 'Japan', 'United Kingdom').
+  Non-obvious spellings (use verbatim): 'Utd.Arab Emir.' (UAE), 'Türkiye',
+  'Russian Fed.', 'Moldavia', 'Czech Republic'. Serbia appears BOTH as 'Serbia'
+  and 'Republic Serbia' — match with Country_Name LIKE '%Serbia%'.
 - Sub_Segments exact values (use these verbatim, never guess):
     EMEA: 'EMEA ENTERP', 'EMEA DEVELOP', 'EMEA GTR', 'EMEA IMC'
     APAC: 'APAC ENTERP', 'APAC DEVELOP', 'APAC GTR', 'APAC IMC'
+    Other: 'US GTR' (US-based travel retail; countries incl. USA, Mexico, Guam),
+           'Not Set' (small unclassified remainder — exclude unless asked)
+  For travel-retail/GTR questions with no region given, include ALL of
+  'EMEA GTR', 'APAC GTR', 'US GTR'.
   If the user says "EMEA ENTRP" or "EMEA Enterprise", map it to 'EMEA ENTERP'.
   If the user says "EMEA Develop", map to 'EMEA DEVELOP'. And so on.
   CRITICAL — region inference from country: if the user names a country without
@@ -226,24 +209,23 @@ that actually exist and say so.
 - For percentage/deviation columns stored as strings, cast with SAFE_CAST(col AS FLOAT64).
 - JOIN between tables on Material_Number + Country_Name (+ Sub_Segments where available).
 - CRITICAL: ALWAYS wrap every volume column in SUM() when the user asks for a market, country,
-  sub-segment, or region total. A bare SELECT col_3PD_Jun_2026 without SUM() returns one random
+  sub-segment, or region total. A bare SELECT ThreePD_Jun_2026 without SUM() returns one random
   SKU row, which is WRONG. Every monthly query at market/sub-segment level must look like:
-    SELECT ROUND(SUM(col_3PD_Jan_2026)) AS Jan, ROUND(SUM(col_3PD_Feb_2026)) AS Feb, ...
+    SELECT ROUND(SUM(ThreePD_Jan_2026)) AS Jan, ROUND(SUM(ThreePD_Feb_2026)) AS Feb, ...
     FROM stat_3pd_forecast WHERE Sub_Segments = 'EMEA ENTERP'
-  -- Note: 3PD columns are ThreePD_Jan_2026 (NOT col_3PD_Jan_2026)
   No LIMIT clause on aggregation queries.
 - Column aliases MUST be just the month name: Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec.
-  Never use raw column names or aliases like Jan_2026_3PD, SF_Jan_2026, col_3PD_Jan_2026.
+  Never use raw column names as aliases (e.g. SF_Jan_2026, Jan_2026_3PD).
 
 ## Response format rules
 - Single number or brief fact: answer inline, no table needed.
 - Monthly breakdowns: ALWAYS show all 12 months (Jan through Dec). Never truncate or use ellipsis.
 - 2 to 50 rows: present as a clean markdown table.
 - 50+ rows: summarise key insights (top 5, totals, trends) — full data shown separately.
-- Market analysis requests: query all 3 tables and structure answer with sections:
+- Market analysis requests: query both tables and structure answer with sections:
     1. Volume Performance (actuals YTD vs SPLY)
     2. Forecast Overview (AdjFC, SF, 3PD for upcoming months)
-    3. Forecast Accuracy (MAPE, lag-1 errors)
+    3. Plan Alignment (AdjFC vs Budget vs PMCF; confirmed SO vs AdjFC for open months)
     4. Top SKUs by volume
     5. Key risks and observations
 
