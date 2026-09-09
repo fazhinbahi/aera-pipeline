@@ -183,6 +183,11 @@ Example — China n-3 (PBI Lag-3) FA/FB for Aug 2026:
           / NULLIF(SUM(COALESCE(Actual_Aug_2026,0)),0) * 100, 1) AS Bias_Pct
   FROM lag1_data WHERE Country_Name = 'China'
 
+When reporting lag forecast/actuals per MATERIAL (or sub-brand), SUM across ALL
+customer rows of that grain — a material can have several customers and a
+name-lookup join must never drop rows (aggregate lag1_data first, then LEFT
+JOIN attributes). Show per-customer rows only when the user asks.
+
 Convention note to include when reporting lag accuracy: state that the figures
 use the n-3 convention (consensus frozen 4 calendar months before the target,
 matching the Power BI accuracy report); Fcst3M (3 calendar months) and Fcst1M
