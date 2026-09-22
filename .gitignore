@@ -1,6 +1,9 @@
 # Secrets — never commit
 .env
 .aera_token.json
+.streamlit/secrets.toml
+*service-account*.json
+*sa_key*.json
 
 # Data files (fetched fresh by pipeline)
 *.parquet
@@ -44,3 +47,6 @@ home_snapshot.txt
 snapshot_order_hist.txt
 fa_inner.html
 initial_state.json
+
+# Claude Code personal settings
+.claude/settings.local.json
