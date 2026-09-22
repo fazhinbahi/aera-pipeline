@@ -22,27 +22,37 @@ _BQ_DATASET = "aera_demand_planning"
 _BQ_ACCOUNT = "jfaizan07@gmail.com"   # local gcloud fallback only
 
 
+def _has_secret() -> bool:
+    """True iff a gcp_service_account secret is configured. Does not raise —
+    accessing st.secrets with nothing configured returns an empty mapping."""
+    try:
+        return "gcp_service_account" in st.secrets
+    except Exception:
+        return False
+
+
 def _bq_client():
     """BigQuery client. Credential priority:
     1. st.secrets["gcp_service_account"]  — Streamlit Cloud / local .streamlit/secrets.toml
     2. GCP_SA_JSON env var                — same convention as gqo_dashboard.py
     3. gcloud auth print-access-token     — local dev fallback
+
+    Only credential *lookup* (step 1's presence check) is defensive; once a
+    credential source is found, construction errors are NOT swallowed — a bad
+    key or a missing dependency should fail loudly, not silently fall through
+    to a local file that doesn't exist on a hosted deploy.
     """
     from google.cloud import bigquery
+    from google.oauth2 import service_account
 
-    try:
-        if "gcp_service_account" in st.secrets:
-            from google.oauth2 import service_account
-            creds = service_account.Credentials.from_service_account_info(
-                dict(st.secrets["gcp_service_account"]),
-                scopes=["https://www.googleapis.com/auth/bigquery"])
-            return bigquery.Client(project=_BQ_PROJECT, credentials=creds)
-    except Exception:
-        pass   # no secrets.toml present locally — fall through
+    if _has_secret():
+        creds = service_account.Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]),
+            scopes=["https://www.googleapis.com/auth/bigquery"])
+        return bigquery.Client(project=_BQ_PROJECT, credentials=creds)
 
     sa_json = os.getenv("GCP_SA_JSON")
     if sa_json:
-        from google.oauth2 import service_account
         creds = service_account.Credentials.from_service_account_info(
             json.loads(sa_json), scopes=["https://www.googleapis.com/auth/bigquery"])
         return bigquery.Client(project=_BQ_PROJECT, credentials=creds)
@@ -95,8 +105,16 @@ def load():
         d = client.query(
             f"SELECT * FROM `{_BQ_PROJECT}.{_BQ_DATASET}.outlier_detection`"
         ).to_dataframe()
-    except Exception:
-        d = pd.read_parquet("outlier_detection_final.parquet")
+    except Exception as e:
+        if os.path.exists("outlier_detection_final.parquet"):
+            d = pd.read_parquet("outlier_detection_final.parquet")
+        else:
+            st.exception(e)
+            st.error(
+                "BigQuery load failed and no local outlier_detection_final.parquet "
+                "is present to fall back to. See the exception above for the real cause."
+            )
+            st.stop()
     d["has_corridor"] = (d["UPPER_BOUND"] > 0) | (d["LOWER_BOUND"] > 0)
     # Zero-width corridor: Aera collapses Upper=Lower when a SKU/market has too little
     # history to compute real variance (avg ~2 months vs ~12 for normal corridors).
@@ -120,11 +138,10 @@ def load_cov():
         return client.query(
             f"SELECT * FROM `{_BQ_PROJECT}.{_BQ_DATASET}.cov_segmentation`"
         ).to_dataframe()
-    except Exception:
-        pass
-    try:
-        return pd.read_parquet("cov_segmentation.parquet")
-    except Exception:
+    except Exception as e:
+        if os.path.exists("cov_segmentation.parquet"):
+            return pd.read_parquet("cov_segmentation.parquet")
+        st.exception(e)
         return pd.DataFrame()
 
 
