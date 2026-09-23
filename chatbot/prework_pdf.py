@@ -610,8 +610,12 @@ def build_prework_pdf(
             act_c = f"Actual_{m}_2026"
             if fc_c not in acc.columns or act_c not in acc.columns:
                 continue
-            sub = acc[[fc_c, act_c]].copy().fillna(0)
-            # keep rows with forecast OR actuals — dropping forecast-only rows
+            sub = acc[["Material_Number", fc_c, act_c]].copy().fillna(0)
+            # Error is measured at SKU grain: customers are netted within each SKU
+            # first, matching Aera's Forecast Accuracy "Accuracy SKU" tab. Errors
+            # are then summed across SKUs, so different SKUs never cancel out.
+            sub = sub.groupby("Material_Number", as_index=False)[[fc_c, act_c]].sum()
+            # keep SKUs with forecast OR actuals — dropping forecast-only rows
             # hides pure over-forecast error from wMAPE
             sub = sub[(sub[act_c] > 0) | (sub[fc_c] > 0)]
             if sub.empty:
@@ -640,7 +644,9 @@ def build_prework_pdf(
         f'({months_str}). The n-3 forecast is the consensus snapshot frozen 4 '
         f'calendar months before each target month — the same convention as the '
         f'Power BI accuracy report. '
-        f'wMAPE and Bias calculated at UPC level and aggregated to market.',
+        f'wMAPE and Bias are measured at SKU level — customers are netted within '
+        f'each SKU, then absolute errors are summed across SKUs — matching Aera\'s '
+        f'Forecast Accuracy dashboard ("Accuracy SKU" tab).',
         ST['body']))
     story.append(sp(4))
 
@@ -662,9 +668,14 @@ def build_prework_pdf(
             act_c = f"Actual_{acc_last}_2026"
 
             if fc_c in acc.columns and act_c in acc.columns:
-                acc_w = acc[["Sub_Brand_Description", fc_c, act_c]].copy().fillna(0)
-                # absolute error must be summed at row (customer x SKU) grain —
-                # netting to sub-brand first collapses wMAPE into |Bias|
+                acc_w = acc[["Sub_Brand_Description", "Material_Number",
+                             fc_c, act_c]].copy().fillna(0)
+                # Net customers within each SKU first (Aera "Accuracy SKU" tab),
+                # then sum absolute errors across SKUs. Netting all the way to
+                # sub-brand would collapse wMAPE into |Bias|, so the SKU grain is
+                # the level that must be preserved here.
+                acc_w = (acc_w.groupby(["Sub_Brand_Description", "Material_Number"],
+                                       as_index=False)[[fc_c, act_c]].sum())
                 acc_w["_abs_err"] = (acc_w[fc_c] - acc_w[act_c]).abs()
                 top10 = (acc_w.groupby("Sub_Brand_Description")
                            .agg(IBP=(fc_c, "sum"), Actuals=(act_c, "sum"),
