@@ -186,6 +186,25 @@ def _col_sum(df, col):
     return df[col].sum() if col in df.columns else 0
 
 
+def _upc_key(df: pd.DataFrame) -> pd.Series:
+    """Grain key for forecast accuracy: the UPC code, falling back to sub-brand
+    where no UPC is on the record.
+
+    Accuracy is measured per UPC (customers netted within it), which is the
+    convention of Aera's "Accuracy UPC Code" tab and the Power BI report. A
+    UPC is one physical pack, so when a material code is superseded — a new
+    vintage-year or repack code for the same product — both codes share a UPC
+    and the switch stops counting as forecast error, which is the point.
+
+    Roughly 14% of volume carries no UPC (mostly new/NPD material codes not yet
+    in the master). Those fall back to sub-brand rather than to their own SKU,
+    because those codes are precisely the ones mid-migration: keying them to
+    the SKU would book the migration as error, the opposite of the UPC view.
+    """
+    upc = df["UPC_Code"].fillna("").astype(str).str.strip()
+    return upc.where(upc.ne(""), "SB:" + df["Sub_Brand_Description"].astype(str))
+
+
 # ── Claude commentary ─────────────────────────────────────────────────────────
 def _gpt(prompt: str, client: "anthropic.Anthropic") -> str:
     try:
@@ -610,12 +629,13 @@ def build_prework_pdf(
             act_c = f"Actual_{m}_2026"
             if fc_c not in acc.columns or act_c not in acc.columns:
                 continue
-            sub = acc[["Material_Number", fc_c, act_c]].copy().fillna(0)
-            # Error is measured at SKU grain: customers are netted within each SKU
-            # first, matching Aera's Forecast Accuracy "Accuracy SKU" tab. Errors
-            # are then summed across SKUs, so different SKUs never cancel out.
-            sub = sub.groupby("Material_Number", as_index=False)[[fc_c, act_c]].sum()
-            # keep SKUs with forecast OR actuals — dropping forecast-only rows
+            sub = acc[["UPC_Code", "Sub_Brand_Description", fc_c, act_c]].copy()
+            sub[[fc_c, act_c]] = sub[[fc_c, act_c]].fillna(0)
+            # Net customers within each UPC, then sum absolute errors across UPCs
+            # (Aera "Accuracy UPC Code" tab / Power BI Mape. UPC).
+            sub["_k"] = _upc_key(sub)
+            sub = sub.groupby("_k", as_index=False)[[fc_c, act_c]].sum()
+            # keep UPCs with forecast OR actuals — dropping forecast-only rows
             # hides pure over-forecast error from wMAPE
             sub = sub[(sub[act_c] > 0) | (sub[fc_c] > 0)]
             if sub.empty:
@@ -644,9 +664,10 @@ def build_prework_pdf(
         f'({months_str}). The n-3 forecast is the consensus snapshot frozen 4 '
         f'calendar months before each target month — the same convention as the '
         f'Power BI accuracy report. '
-        f'wMAPE and Bias are measured at SKU level — customers are netted within '
-        f'each SKU, then absolute errors are summed across SKUs — matching Aera\'s '
-        f'Forecast Accuracy dashboard ("Accuracy SKU" tab).',
+        f'wMAPE and Bias are measured at UPC level — customers are netted within '
+        f'each UPC, then absolute errors are summed across UPCs — matching Aera\'s '
+        f'Forecast Accuracy dashboard ("Accuracy UPC Code" tab) and the Power BI '
+        f'Mape. UPC measure.',
         ST['body']))
     story.append(sp(4))
 
@@ -668,13 +689,14 @@ def build_prework_pdf(
             act_c = f"Actual_{acc_last}_2026"
 
             if fc_c in acc.columns and act_c in acc.columns:
-                acc_w = acc[["Sub_Brand_Description", "Material_Number",
-                             fc_c, act_c]].copy().fillna(0)
-                # Net customers within each SKU first (Aera "Accuracy SKU" tab),
-                # then sum absolute errors across SKUs. Netting all the way to
-                # sub-brand would collapse wMAPE into |Bias|, so the SKU grain is
-                # the level that must be preserved here.
-                acc_w = (acc_w.groupby(["Sub_Brand_Description", "Material_Number"],
+                acc_w = acc[["Sub_Brand_Description", "UPC_Code",
+                             fc_c, act_c]].copy()
+                acc_w[[fc_c, act_c]] = acc_w[[fc_c, act_c]].fillna(0)
+                # Net customers within each UPC, then sum absolute errors across
+                # UPCs. Netting all the way to sub-brand would collapse wMAPE
+                # into |Bias|, so the UPC grain is what must be preserved here.
+                acc_w["_k"] = _upc_key(acc_w)
+                acc_w = (acc_w.groupby(["Sub_Brand_Description", "_k"],
                                        as_index=False)[[fc_c, act_c]].sum())
                 acc_w["_abs_err"] = (acc_w[fc_c] - acc_w[act_c]).abs()
                 top10 = (acc_w.groupby("Sub_Brand_Description")
