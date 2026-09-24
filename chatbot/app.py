@@ -196,15 +196,23 @@ def _excel_bytes(dataframes: list) -> bytes:
             sheet = _sheet_name(dfi.get("title"), i, used)
             df.to_excel(xw, sheet_name=sheet, index=False)
             ws = xw.sheets[sheet]
-            for c, col in enumerate(df.columns, start=1):
-                cell = ws.cell(row=1, column=c)
+            for c in range(len(df.columns)):
+                col_name = str(df.columns[c])
+                cell = ws.cell(row=1, column=c + 1)
                 cell.font = Font(bold=True, color="FFFFFF")
                 cell.fill = PatternFill("solid", fgColor="1B2B4B")
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-                # width from the header and a sample of values (full scan is wasteful)
-                sample = df[col].head(200).astype(str).map(len).max() if len(df) else 0
-                ws.column_dimensions[get_column_letter(c)].width = \
-                    min(max(int(sample or 0), len(str(col))) + 2, 42)
+                # Width from the header and a sample of values. Positional access
+                # (duplicate column labels would otherwise return a DataFrame) and
+                # str() per value — BigQuery's nullable dtypes keep NA after
+                # astype(str), and len(NA) raises TypeError.
+                try:
+                    longest = max((len(str(v)) for v in df.iloc[:200, c].tolist()),
+                                  default=0)
+                except Exception:
+                    longest = 0
+                ws.column_dimensions[get_column_letter(c + 1)].width = \
+                    min(max(longest, len(col_name)) + 2, 42)
             ws.freeze_panes = "A2"
     return buf.getvalue()
 
@@ -227,10 +235,19 @@ def _render_results(dataframes: list, chat_idx: int):
             st.caption(title)
         st.dataframe(dfi["df"], use_container_width=True, hide_index=True)
 
+    # The answer itself is the deliverable — a download problem must never take
+    # the page down with it.
+    try:
+        xls = _excel_for(dataframes, chat_idx)
+    except Exception as exc:
+        st.caption(f"⚠ Excel export unavailable for this answer ({type(exc).__name__}). "
+                   "The tables above are still complete.")
+        return
+
     n = len(dataframes)
     st.download_button(
         label=f"⬇ Download Excel ({n} tab{'s' if n > 1 else ''})",
-        data=_excel_for(dataframes, chat_idx),
+        data=xls,
         file_name=f"demand_planning_{datetime.now():%Y-%m-%d_%H%M}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"xls_{chat_idx}",
