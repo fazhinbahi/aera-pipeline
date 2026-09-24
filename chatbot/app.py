@@ -171,18 +171,6 @@ if "chat_display" not in st.session_state:
     st.session_state.chat_display: list = []   # UI display history
 
 
-def _csv_download(df: pd.DataFrame, key: str, filename: str = "result.csv"):
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    st.download_button(
-        label="⬇ Download CSV",
-        data=buf.getvalue(),
-        file_name=filename,
-        mime="text/csv",
-        key=key,
-    )
-
-
 def _sheet_name(title, idx: int, used: set) -> str:
     """Excel-safe, unique sheet name (Excel caps these at 31 chars and bans []:*?/\\)."""
     base = re.sub(r"[\[\]:*?/\\]", "-", str(title or "")).strip()
@@ -233,14 +221,11 @@ def _render_results(dataframes: list, chat_idx: int):
     """Tables, a CSV per table, and one multi-tab Excel for the whole answer."""
     if not dataframes:
         return
-    for df_idx, dfi in enumerate(dataframes):
+    for dfi in dataframes:
         title = dfi.get("title", "")
         if title:
             st.caption(title)
         st.dataframe(dfi["df"], use_container_width=True, hide_index=True)
-        safe_title = title[:30].replace(" ", "_").replace("/", "-") or "result"
-        _csv_download(dfi["df"], key=f"dl_{chat_idx}_{df_idx}",
-                      filename=f"{safe_title}.csv")
 
     n = len(dataframes)
     st.download_button(
