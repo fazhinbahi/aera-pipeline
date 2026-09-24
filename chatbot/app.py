@@ -8,7 +8,9 @@ Run with:
 
 import io
 import os
+import re
 import sys
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -159,6 +161,7 @@ with st.sidebar:
     if st.button("🗑 Clear conversation"):
         st.session_state.messages = []
         st.session_state.chat_display = []
+        st.session_state.pop("_xls_cache", None)
         st.rerun()
 
 # ── Session state init ────────────────────────────────────────────────────────
@@ -177,6 +180,75 @@ def _csv_download(df: pd.DataFrame, key: str, filename: str = "result.csv"):
         file_name=filename,
         mime="text/csv",
         key=key,
+    )
+
+
+def _sheet_name(title, idx: int, used: set) -> str:
+    """Excel-safe, unique sheet name (Excel caps these at 31 chars and bans []:*?/\\)."""
+    base = re.sub(r"[\[\]:*?/\\]", "-", str(title or "")).strip()
+    base = re.sub(r"\s+", " ", base)[:31] or f"Table {idx + 1}"
+    name, n = base, 1
+    while name.lower() in used:
+        suffix = f" ({n})"
+        name = base[:31 - len(suffix)] + suffix
+        n += 1
+    used.add(name.lower())
+    return name
+
+
+def _excel_bytes(dataframes: list) -> bytes:
+    """Every result table of one answer in a single workbook, one tab per table."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    buf, used = io.BytesIO(), set()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        for i, dfi in enumerate(dataframes):
+            df = dfi["df"]
+            sheet = _sheet_name(dfi.get("title"), i, used)
+            df.to_excel(xw, sheet_name=sheet, index=False)
+            ws = xw.sheets[sheet]
+            for c, col in enumerate(df.columns, start=1):
+                cell = ws.cell(row=1, column=c)
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill("solid", fgColor="1B2B4B")
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                # width from the header and a sample of values (full scan is wasteful)
+                sample = df[col].head(200).astype(str).map(len).max() if len(df) else 0
+                ws.column_dimensions[get_column_letter(c)].width = \
+                    min(max(int(sample or 0), len(str(col))) + 2, 42)
+            ws.freeze_panes = "A2"
+    return buf.getvalue()
+
+
+def _excel_for(dataframes: list, chat_idx: int) -> bytes:
+    """Memoised per message — Streamlit reruns the whole script on every interaction."""
+    cache = st.session_state.setdefault("_xls_cache", {})
+    if chat_idx not in cache:
+        cache[chat_idx] = _excel_bytes(dataframes)
+    return cache[chat_idx]
+
+
+def _render_results(dataframes: list, chat_idx: int):
+    """Tables, a CSV per table, and one multi-tab Excel for the whole answer."""
+    if not dataframes:
+        return
+    for df_idx, dfi in enumerate(dataframes):
+        title = dfi.get("title", "")
+        if title:
+            st.caption(title)
+        st.dataframe(dfi["df"], use_container_width=True, hide_index=True)
+        safe_title = title[:30].replace(" ", "_").replace("/", "-") or "result"
+        _csv_download(dfi["df"], key=f"dl_{chat_idx}_{df_idx}",
+                      filename=f"{safe_title}.csv")
+
+    n = len(dataframes)
+    st.download_button(
+        label=f"⬇ Download Excel ({n} tab{'s' if n > 1 else ''})",
+        data=_excel_for(dataframes, chat_idx),
+        file_name=f"demand_planning_{datetime.now():%Y-%m-%d_%H%M}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"xls_{chat_idx}",
     )
 
 
@@ -208,14 +280,7 @@ for chat_idx, item in enumerate(st.session_state.chat_display):
     with st.chat_message(item["role"]):
         st.markdown(item["content"])
 
-        for df_idx, dfi in enumerate(item.get("dataframes", [])):
-            df = dfi["df"]
-            title = dfi.get("title", "")
-            if title:
-                st.caption(title)
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            safe_title = title[:30].replace(" ", "_").replace("/", "-") or "result"
-            _csv_download(df, key=f"dl_{chat_idx}_{df_idx}", filename=f"{safe_title}.csv")
+        _render_results(item.get("dataframes", []), chat_idx)
 
 
 # ── Chat input ────────────────────────────────────────────────────────────────
@@ -244,14 +309,7 @@ if prompt:
         st.markdown(text)
 
         chat_idx = len(st.session_state.chat_display)
-        for df_idx, dfi in enumerate(dfs):
-            df = dfi["df"]
-            title = dfi.get("title", "")
-            if title:
-                st.caption(title)
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            safe_title = title[:30].replace(" ", "_").replace("/", "-") or "result"
-            _csv_download(df, key=f"dl_{chat_idx}_{df_idx}", filename=f"{safe_title}.csv")
+        _render_results(dfs, chat_idx)
 
     # Persist to display history
     st.session_state.chat_display.append({
