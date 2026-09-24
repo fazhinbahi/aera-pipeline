@@ -87,21 +87,37 @@ TOOLS = [
 ]
 
 
-def run_agent(messages: list) -> dict:
+def run_agent(messages: list, on_event=None) -> dict:
     """
     Run one user turn through the agent loop.
 
     Args:
         messages: Full conversation history in Anthropic format (mutated in place).
+        on_event: optional callback(kind, detail) for live progress. Kinds:
+                  "thinking"  {step}            — a model turn started
+                  "plan"      {text}            — model's narration before a tool call
+                  "schema"    {table}           — inspecting a table
+                  "sql"       {label}           — query going out
+                  "sql_done"  {label,rows,error}— query came back
+                  "writing"   {}                — composing the final answer
 
     Returns:
         {"text": str, "dataframes": list[{"title": str, "df": pd.DataFrame}]}
     """
+    def emit(kind, **detail):
+        # Progress reporting must never be able to break the run.
+        if on_event:
+            try:
+                on_event(kind, detail)
+            except Exception:
+                pass
+
     dataframes: list[dict] = []
     iterations = 0
 
     while iterations < MAX_ITERATIONS:
         iterations += 1
+        emit("thinking", step=iterations)
 
         response = None
         for attempt, delay in enumerate([0] + _RETRY_DELAYS):
@@ -147,7 +163,13 @@ def run_agent(messages: list) -> dict:
 
         # ── Done ─────────────────────────────────────────────────────────────
         if response.stop_reason != "tool_use":
+            emit("writing")
             return {"text": "\n\n".join(text_parts), "dataframes": dataframes}
+
+        # narration the model wrote before reaching for a tool
+        for _t in text_parts:
+            if _t.strip():
+                emit("plan", text=_t.strip())
 
         # ── Tool calls ────────────────────────────────────────────────────────
         tool_results = []
@@ -157,7 +179,10 @@ def run_agent(messages: list) -> dict:
             if tu.name == "run_sql":
                 query = args.get("query", "")
                 label = args.get("label", query[:60])
+                emit("sql", label=label)
                 df, error = run_sql(query)
+                emit("sql_done", label=label, error=error,
+                     rows=(0 if df is None else len(df)))
 
                 if error:
                     result_content = f"SQL Error: {error}"
@@ -175,6 +200,7 @@ def run_agent(messages: list) -> dict:
                         dataframes.append({"title": label, "df": df})
 
             elif tu.name == "get_schema":
+                emit("schema", table=args.get("table_name", ""))
                 result_content = get_schema(args.get("table_name", ""))
 
             else:

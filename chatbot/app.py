@@ -10,6 +10,7 @@ import io
 import os
 import re
 import sys
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -297,16 +298,49 @@ if prompt:
     # Add to agent history
     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    # Run agent
+    # Run agent, narrating each step so the wait is visible rather than blank
     with st.chat_message("assistant"):
-        with st.spinner("Analysing…"):
+        started = time.time()
+        with st.status("Working on it…", expanded=True) as status:
+
+            def _on_event(kind: str, d: dict):
+                el = f"{time.time() - started:.0f}s"
+                if kind == "thinking":
+                    status.update(label=f"Thinking… ({el})")
+                    if d.get("step", 1) > 1:
+                        st.write(f"🤔 Reviewing what came back… `{el}`")
+                    else:
+                        st.write("🤔 Working out how to answer this…")
+                elif kind == "plan":
+                    txt = " ".join(d.get("text", "").split())
+                    if txt:
+                        st.write(f"💭 {txt[:300]}{'…' if len(txt) > 300 else ''}")
+                elif kind == "schema":
+                    st.write(f"📂 Checking the columns in `{d.get('table','')}`")
+                elif kind == "sql":
+                    status.update(label=f"Querying BigQuery… ({el})")
+                    st.write(f"🔎 Running query — *{d.get('label','')}*")
+                elif kind == "sql_done":
+                    if d.get("error"):
+                        st.write(f"　↳ ⚠ query failed, adjusting: "
+                                 f"{str(d['error'])[:120]}")
+                    else:
+                        st.write(f"　↳ ✅ {d.get('rows', 0):,} rows back `{el}`")
+                elif kind == "writing":
+                    status.update(label=f"Writing up the answer… ({el})")
+                    st.write("📝 Pulling it together…")
+
             try:
-                result = run_agent(st.session_state.messages)
+                result = run_agent(st.session_state.messages, on_event=_on_event)
                 text = result["text"]
                 dfs  = result["dataframes"]
+                status.update(label=f"Done in {time.time() - started:.0f}s",
+                              state="complete", expanded=False)
             except Exception as exc:
                 text = f"⚠ Error: {exc}"
                 dfs  = []
+                status.update(label="Something went wrong", state="error",
+                              expanded=True)
 
         st.markdown(text)
 
