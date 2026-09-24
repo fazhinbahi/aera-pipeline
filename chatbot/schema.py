@@ -165,6 +165,20 @@ current column list.
                         "FA/FB" without specifying a convention, and say so.
     Actual_<Mon>_2026 = confirmed sales for that month
 
+## ⚠ DATA QUALITY — three columns are known-corrupted (verified 23 Sep 2026)
+Aera's snapshot dimension returns roughly DOUBLE the true forecast for the
+May 2026 and June 2026 snapshot months (measured 1.85x for Australia, 2.0-2.2x
+for China, uniform across every sub-brand — it is a platform defect, not a
+planning decision, and is with Aera support). Columns built from those two
+snapshots are inflated and must NOT be reported as fact:
+    Fcst1M_Jun_2026   (built from the May 2026 snapshot)   ~2x too high
+    Fcst1M_Jul_2026   (built from the Jun 2026 snapshot)   ~2x too high
+    Fcst3M_Aug_2026   (built from the May 2026 snapshot)   ~2x too high
+Every Fcst4M_* (n-3) column is CLEAN — they draw on the Sep 2025 → Apr 2026
+snapshots, all verified in band. If asked for Lag-1 or Lag-3 accuracy covering
+Jun/Jul/Aug 2026, answer with Fcst4M (n-3) instead and say plainly that the
+Lag-1/Lag-3 source for those months is corrupted. Never silently use them.
+
 ## How to compute accuracy metrics (volume-weighted, the standard here)
 For a chosen scope (country/sub-brand/SKU/month range):
   WMAPE % = SUM(ABS(Fcst - Actual)) / NULLIF(SUM(Actual),0) * 100
@@ -172,6 +186,44 @@ For a chosen scope (country/sub-brand/SKU/month range):
   FB/Bias % = (SUM(Fcst) - SUM(Actual)) / NULLIF(SUM(Actual),0) * 100
 Compute SUMs over the scope FIRST, then the ratio — never average
 row-level percentages (that is simple MAPE, only use it if explicitly asked).
+
+## Which GRAIN to measure error at — this changes the answer, so get it right
+Absolute error is summed only AFTER aggregating to a grain, so the same market
+and month legitimately produce three different wMAPEs (verified Australia APAC
+IMC, Aug 2026 n-3):
+    UPC level      — customers netted within each UPC      ->  78%   <- DEFAULT
+    SKU level      — customers netted within each material ->  129%
+    customer x SKU — nothing netted at all                 ->  135%
+The team reviews the UPC number: it is Aera's Forecast Accuracy "Accuracy UPC
+Code" tab and the Power BI "Mape. UPC" measure, and it is what the Pre-Work PDF
+reports. DEFAULT to UPC level, state which grain you used, and only use another
+grain when the user asks for it. Bias is grain-invariant — identical at all three.
+Netting matters because a superseded material code (a new vintage-year or repack
+code for the same physical pack) shares a UPC with the old one, so a code
+migration stops counting as forecast error, which is the intent of this view.
+
+lag1_data has no UPC_Code column — JOIN customer_analysis to get it. Rows with
+no UPC fall back to their sub-brand (they are mostly new/NPD codes, exactly the
+ones mid-migration). Canonical UPC-level accuracy query:
+  WITH lag AS (
+    SELECT Material_Number, Country_Name, Customer_Number,
+           COALESCE(Fcst4M_Aug_2026,0) AS fc, COALESCE(Actual_Aug_2026,0) AS act
+    FROM `euphoric-hull-442815-n8.aera_demand_planning.lag1_data`
+    WHERE Country_Name='Australia'),
+  attr AS (
+    SELECT DISTINCT Material_Number, Country_Name, Customer_Number,
+           UPC_Code, Sub_Brand_Description
+    FROM `euphoric-hull-442815-n8.aera_demand_planning.customer_analysis`
+    WHERE Country_Name='Australia' AND Sub_Segments='APAC IMC'),
+  j AS (
+    SELECT COALESCE(NULLIF(TRIM(a.UPC_Code),''), CONCAT('SB:', a.Sub_Brand_Description)) AS upc_key,
+           SUM(l.fc) AS fc, SUM(l.act) AS act
+    FROM lag l JOIN attr a USING (Material_Number, Country_Name, Customer_Number)
+    GROUP BY 1)
+  SELECT ROUND(SUM(fc)) AS n3_fcst, ROUND(SUM(act)) AS actuals,
+         ROUND(SUM(ABS(fc-act))/NULLIF(SUM(act),0)*100,1) AS wmape_pct,
+         ROUND((SUM(fc)-SUM(act))/NULLIF(SUM(act),0)*100,1) AS bias_pct
+  FROM j
 
 Example — China n-3 (PBI Lag-3) FA/FB for Aug 2026:
   SELECT
