@@ -6,6 +6,7 @@ import io
 import os
 import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
 import pandas as pd
@@ -73,6 +74,19 @@ ST = {
                  textColor=NAVY, alignment=TA_LEFT, leading=9),
     'tblR':  _S('tblR',  fontName='Helvetica', fontSize=7,
                  textColor=BODY_C, alignment=TA_CENTER, leading=9),
+    # Hierarchy table: level 0 = sub-brand/size, 1 = UPC, 2 = SKU
+    'hL0':   _S('hL0',   fontName='Helvetica-Bold', fontSize=7,
+                 textColor=NAVY, alignment=TA_LEFT, leading=9),
+    'hR0':   _S('hR0',   fontName='Helvetica-Bold', fontSize=7,
+                 textColor=NAVY, alignment=TA_CENTER, leading=9),
+    'hL1':   _S('hL1',   fontName='Helvetica-Bold', fontSize=6.8,
+                 textColor=BODY_C, alignment=TA_LEFT, leading=8.6, leftIndent=6),
+    'hR1':   _S('hR1',   fontName='Helvetica', fontSize=6.8,
+                 textColor=BODY_C, alignment=TA_CENTER, leading=8.6),
+    'hL2':   _S('hL2',   fontName='Helvetica', fontSize=6.3,
+                 textColor=GREY, alignment=TA_LEFT, leading=8, leftIndent=16),
+    'hR2':   _S('hR2',   fontName='Helvetica', fontSize=6.3,
+                 textColor=GREY, alignment=TA_CENTER, leading=8),
     'box':    _S('box',    fontName='Helvetica', fontSize=9, textColor=NAVY,
                  leading=13, spaceBefore=3, spaceAfter=3),
     'boxB':   _S('boxB',   fontName='Helvetica-Bold', fontSize=9, textColor=NAVY,
@@ -131,11 +145,15 @@ def dtbl(headers, rows, col_w, center_from=1, font_size=8.5):
         return ParagraphStyle(base_key + '_s', parent=s, fontSize=font_size, leading=font_size + 2.5)
 
     def pc(text, bold=False, center=False, total=False):
+        # Cells carry master data, never markup: sub-brands such as "Kraken
+        # Cherry&Vanill" must not be read as an entity (ReportLab silently
+        # repaired it to "Cherry&Vanill;" before this).
+        text = escape(str(text))
         if total:
-            return Paragraph(str(text), _st('cell_tc') if center else _st('cell_t'))
+            return Paragraph(text, _st('cell_tc') if center else _st('cell_t'))
         if bold:
-            return Paragraph(str(text), _st('cell_h'))
-        return Paragraph(str(text), _st('cell_c') if center else _st('cell'))
+            return Paragraph(text, _st('cell_h'))
+        return Paragraph(text, _st('cell_c') if center else _st('cell'))
 
     data = [[pc(h, bold=True, center=True) for h in headers]]
     for ri, row in enumerate(rows):
@@ -160,6 +178,44 @@ def dtbl(headers, rows, col_w, center_from=1, font_size=8.5):
                 ('LINEABOVE',  (0, ri+1), (-1, ri+1), 0.8, NAVY),
             ]
     t = Table(data, colWidths=col_w)
+    t.setStyle(TableStyle(styles))
+    return [t, sp(5)]
+
+
+def htbl(headers, rows, col_w):
+    """Drill-down table. Each row is (level, cells): 0 = group, 1 = UPC, 2 = SKU.
+
+    Levels are distinguished by weight, indent and shading rather than by extra
+    columns, so the whole hierarchy keeps one set of measure columns and the
+    group rows carry exactly the figures of the summary table above it. The
+    header repeats when the table runs onto the next page.
+    """
+    # Cells hold master data, not markup — material descriptions carry "&"
+    # ("KRAKEN RUM&COLA"), which ReportLab would otherwise read as an entity.
+    def _p(v, style):
+        return Paragraph(escape(str(v)), ST[style])
+
+    data = [[_p(h, 'tblH') for h in headers]]
+    styles = [
+        ('BACKGROUND',    (0, 0), (-1, 0), NAVY),
+        ('LINEBELOW',     (0, 0), (-1, 0), 1, NAVY),
+        ('GRID',          (0, 0), (-1, -1), 0.25, colors.HexColor('#DDDDDD')),
+        ('TOPPADDING',    (0, 0), (-1, -1), 2.5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2.5),
+        ('LEFTPADDING',   (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING',  (0, 0), (-1, -1), 4),
+        ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+    ]
+    for ri, (level, cells) in enumerate(rows):
+        lvl = max(0, min(2, int(level)))
+        data.append([_p(v, f'hL{lvl}' if ci == 0 else f'hR{lvl}')
+                     for ci, v in enumerate(cells)])
+        if lvl == 0:
+            styles += [
+                ('BACKGROUND', (0, ri + 1), (-1, ri + 1), LBLUE),
+                ('LINEABOVE',  (0, ri + 1), (-1, ri + 1), 0.7, NAVY),
+            ]
+    t = Table(data, colWidths=col_w, repeatRows=1)
     t.setStyle(TableStyle(styles))
     return [t, sp(5)]
 
@@ -268,7 +324,10 @@ def _gpt(prompt: str, client: "anthropic.Anthropic") -> str:
             ),
             messages=[{"role": "user", "content": prompt}],
         )
-        return "".join(b.text for b in resp.content if b.type == "text").strip()
+        # Escaped: the commentary quotes product names back ("Kraken
+        # Cherry&Vanilla"), and it is rendered as a ReportLab paragraph.
+        return escape("".join(b.text for b in resp.content
+                              if b.type == "text").strip())
     except Exception:
         return ""
 
@@ -721,7 +780,8 @@ def build_prework_pdf(
         f'Mape. UPC measure. In 3.1 below, Error ABS UPC counts only materials '
         f'carrying a UPC, as the Power BI measure does; roughly 15% of rows have '
         f'no UPC in the Aera master, so their volume is shown but their error is '
-        f'not.',
+        f'not. Section 3.2 opens each of those ten lines down to UPC and material '
+        f'code so the drivers are visible.',
         ST['body']))
     story.append(sp(4))
 
@@ -750,8 +810,11 @@ def build_prework_pdf(
                 #   % VOL          = share of the WHOLE market's actual volume
                 #   Mape. UPC      = Error ABS UPC / Actual
                 #   BIAS           = Forecast Error / IBP
-                acc_w = acc[["Material_Number", "Sub_Brand_Description", "Volume",
-                             "UPC_Code", fc_c, act_c]].copy()
+                _keep = ["Material_Number", "Sub_Brand_Description", "Volume",
+                         "UPC_Code", "Material_Long_Description", fc_c, act_c]
+                if "Material_Long_Description" not in acc.columns:
+                    acc = acc.assign(Material_Long_Description="")
+                acc_w = acc[_keep].copy()
                 acc_w[[fc_c, act_c]] = acc_w[[fc_c, act_c]].fillna(0)
                 # Re-key retired packs onto their successor so the changeover is
                 # one line instead of two mirror-image errors.
@@ -761,11 +824,13 @@ def build_prework_pdf(
                     _attr = (acc_w[~_chained]
                              .drop_duplicates("Material_Number")
                              .set_index("Material_Number")[["Sub_Brand_Description",
-                                                            "Volume"]])
+                                                            "Volume",
+                                                            "Material_Long_Description"]])
                     # Take the successor's sub-brand/size, but NOT its UPC — the
                     # new codes have none, while the retiring ones do, and the
                     # UPC is what the error measure keys on.
-                    for col in ["Sub_Brand_Description", "Volume"]:
+                    for col in ["Sub_Brand_Description", "Volume",
+                                "Material_Long_Description"]:
                         _new = _succ.map(_attr[col])
                         acc_w.loc[_chained, col] = _new.fillna(acc_w.loc[_chained, col])
                     acc_w.loc[_chained, "Material_Number"] = _succ
@@ -872,6 +937,124 @@ def build_prework_pdf(
                     if commentary:
                         story += callout([('⚠  KEY TAKEAWAY — ACCURACY', 'boxB'),
                                           (commentary, 'box')], bg=AMBER)
+
+                # ── 3.2 UPC / SKU drill-down ──────────────────────────────────
+                # Same ten rows, opened up one level at a time, so it is visible
+                # which UPC and which material code drive each line's error. The
+                # level-0 rows are byte-identical to 3.1 above.
+                story.append(PageBreak())
+                story.append(Paragraph(
+                    f'3.2  UPC / SKU Breakdown of the Top 10 — {acc_last} 2026',
+                    ST['sub']))
+                story.append(Paragraph(
+                    'Each sub-brand/size from 3.1 opened up to the UPCs it contains, '
+                    'and each UPC to its material codes, ordered by actual sales. '
+                    'Error ABS on a <b>UPC</b> row is the Power BI measure: the SKUs and '
+                    'customers inside that UPC are netted first, then the absolute '
+                    'error is taken — which is why two material codes can each show '
+                    'a large error while their shared UPC shows almost none (a '
+                    'vintage-year or repack changeover). Error ABS on a <b>SKU</b> row is '
+                    'that code\'s own absolute error and is shown for diagnosis only; '
+                    'SKU rows do not sum to the UPC figure. Values in brackets are '
+                    'excluded from the reported measure because the material carries '
+                    'no UPC in the Aera master. SKUs with no plan and no sales in the '
+                    'month are omitted.',
+                    ST['source']))
+                story.append(sp(4))
+
+                # Material description, taken from whichever row carries one
+                _d = (acc_w["Material_Long_Description"].fillna("")
+                      .astype(str).str.strip())
+                _dmap = (acc_w.assign(_d=_d)[lambda x: x["_d"] != ""]
+                              .drop_duplicates("Material_Number")
+                              .set_index("Material_Number")["_d"])
+                acc_w["_upc"] = acc_w["UPC_Code"].fillna("").astype(str).str.strip()
+
+                upc_lvl = acc_w.groupby(["_grain", "_upc"], as_index=False)[[fc_c, act_c]].sum()
+                sku_lvl = acc_w.groupby(["_grain", "_upc", "Material_Number"],
+                                        as_index=False)[[fc_c, act_c]].sum()
+
+                def _m(ibp, act, err, counted=True):
+                    """The 7 measure cells for one row, in 3.1's conventions."""
+                    fe   = act - ibp
+                    pct  = act / market_vol * 100 if market_vol else 0.0
+                    bias = 100.0 if ibp == 0 else fe / ibp * 100
+                    mape = err / act * 100 if act > 0 else None
+                    wrap = (lambda s: s) if counted else (lambda s: f'[{s}]')
+                    return [_fmt(ibp), _fmt(act), _fmt(fe),
+                            wrap(f'{err:,.2f}'),
+                            f'{pct:.2f}%',
+                            wrap(f'{mape:.2f}%') if mape is not None else '—',
+                            f'{bias:.2f}%']
+
+                brk_rows   = []
+                uncounted  = 0.0
+                for _, g in top10.iterrows():
+                    grain = g["_grain"]
+                    brk_rows.append((0, [grain] + _m(g["IBP"], g["Actuals"], g["Error"])))
+
+                    ug = (upc_lvl[upc_lvl["_grain"] == grain]
+                          .sort_values(act_c, ascending=False))
+                    for _, ur in ug.iterrows():
+                        upc      = ur["_upc"]
+                        has_code = upc != ""
+                        if ur[fc_c] == 0 and ur[act_c] == 0:
+                            continue          # dormant code, nothing to explain
+                        sg = (sku_lvl[(sku_lvl["_grain"] == grain)
+                                      & (sku_lvl["_upc"] == upc)]
+                              .assign(_err=lambda d: (d[fc_c] - d[act_c]).abs())
+                              .sort_values(act_c, ascending=False))
+                        sg = sg[(sg[fc_c] != 0) | (sg[act_c] != 0)]
+                        # A UPC nets its SKUs; with no UPC there is nothing to net
+                        # against, so sum the codes' own errors to show the size
+                        # of what the reported measure leaves out.
+                        u_err = (abs(ur[fc_c] - ur[act_c]) if has_code
+                                 else sg["_err"].sum())
+                        if not has_code:
+                            uncounted += u_err
+
+                        def _sku_label(r):
+                            d = _dmap.get(r["Material_Number"], "")
+                            d = (d[:34] + '…') if len(d) > 35 else d
+                            return f'{r["Material_Number"]}  {d}'.strip()
+
+                        if len(sg) <= 1:
+                            # Nothing to drill into — fold the single code into
+                            # the UPC row rather than repeating the numbers.
+                            head = (f'UPC {upc}' if has_code
+                                    else 'No UPC in Aera master')
+                            if len(sg) == 1:
+                                head = f'{head} · {_sku_label(sg.iloc[0])}'
+                            brk_rows.append((1, [head]
+                                             + _m(ur[fc_c], ur[act_c], u_err, has_code)))
+                            continue
+
+                        head = (f'UPC {upc}' if has_code else
+                                'No UPC in Aera master — error not reported')
+                        brk_rows.append((1, [f'{head}  ({len(sg)} SKUs)']
+                                         + _m(ur[fc_c], ur[act_c], u_err, has_code)))
+                        for _, sr in sg.iterrows():
+                            brk_rows.append((2, [_sku_label(sr)]
+                                             + _m(sr[fc_c], sr[act_c], sr["_err"],
+                                                  has_code)))
+
+                story += htbl(['Sub Brand / Size  ·  UPC  ·  SKU', 'IBP',
+                               'Actual Sales', 'Forecast Error', 'Error ABS',
+                               '% VOL', 'Mape. UPC', 'BIAS'],
+                              brk_rows,
+                              [5.6*cm, 1.75*cm, 1.8*cm, 1.8*cm,
+                               1.95*cm, 1.5*cm, 1.7*cm, 1.5*cm])
+                if uncounted > 0:
+                    story.append(Paragraph(
+                        f'Materials with no UPC in the Aera master contribute nothing '
+                        f'to the reported measure. Across these ten lines their own '
+                        f'absolute error is <b>{uncounted:,.0f}</b> 9LC, against a '
+                        f'reported Error ABS UPC of {tot_err:,.0f}. The two do not '
+                        f'simply add: once a code is given a UPC it nets against the '
+                        f'other codes sharing it, which in several cases here would '
+                        f'reduce the error rather than increase it. The figure sizes '
+                        f'the master-data gap; it does not restate the KPI.',
+                        ST['source']))
     else:
         story.append(Paragraph(
             'No n-3 accuracy data available for this market.', ST['source']))
@@ -939,7 +1122,7 @@ def build_prework_pdf(
         dev_cw = [brand_col_w] + [month_col_w] * n_open
 
         for brand in top5:
-            story.append(Paragraph(f'<b>{brand}</b>', ST['sub']))
+            story.append(Paragraph(f'<b>{escape(str(brand))}</b>', ST['sub']))
             bdf = ca[ca["Sub_Brand_Description"] == brand]
 
             fc_row  = ['AdjFC 2026']
@@ -1066,7 +1249,7 @@ def build_prework_pdf(
         hist_cw   = [1.0*cm] + [1.25*cm]*12 + [1.45*cm]
 
         for brand in top3:
-            story.append(Paragraph(f'<b>{brand}</b>', ST['sub']))
+            story.append(Paragraph(f'<b>{escape(str(brand))}</b>', ST['sub']))
             bdf = ca[ca["Sub_Brand_Description"] == brand]
             hist_rows = []
 
