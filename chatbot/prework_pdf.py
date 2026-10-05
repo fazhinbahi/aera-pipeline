@@ -682,60 +682,81 @@ def build_prework_pdf(
         acc_last = monthly_stats[-1]['month'] if monthly_stats else None
         if acc_last and not acc.empty:
             story.append(Paragraph(
-                f'3.1  Top-10 Sub-Brands — {acc_last} 2026  '
-                f'(IBP n-3 Forecast vs Actuals)',
+                f'3.1  Last Month Top 10 By Volume — {acc_last} 2026  '
+                f'(IBP n-3 vs Actual Sales, by Sub-Brand / Size)',
                 ST['sub']))
             fc_c  = f"Fcst4M_{acc_last}_2026"
             act_c = f"Actual_{acc_last}_2026"
 
             if fc_c in acc.columns and act_c in acc.columns:
-                acc_w = acc[["Sub_Brand_Description", "UPC_Code",
+                # Laid out to mirror the Power BI "Last Month Top 10 By Volume"
+                # KPI view, including its sign conventions:
+                #   Forecast Error = Actual - IBP   (negative = sold below plan)
+                #   Error ABS UPC  = sum of |error| measured at UPC grain
+                #   % VOL          = share of the WHOLE market's actual volume
+                #   Mape. UPC      = Error ABS UPC / Actual
+                #   BIAS           = Forecast Error / IBP
+                acc_w = acc[["Sub_Brand_Description", "Volume", "UPC_Code",
                              fc_c, act_c]].copy()
                 acc_w[[fc_c, act_c]] = acc_w[[fc_c, act_c]].fillna(0)
-                # Net customers within each UPC, then sum absolute errors across
-                # UPCs. Netting all the way to sub-brand would collapse wMAPE
-                # into |Bias|, so the UPC grain is what must be preserved here.
-                acc_w["_k"] = _upc_key(acc_w)
-                acc_w = (acc_w.groupby(["Sub_Brand_Description", "_k"],
-                                       as_index=False)[[fc_c, act_c]].sum())
-                acc_w["_abs_err"] = (acc_w[fc_c] - acc_w[act_c]).abs()
-                top10 = (acc_w.groupby("Sub_Brand_Description")
+                acc_w["_k"]    = _upc_key(acc_w)
+                acc_w["_size"] = acc_w["Volume"].apply(
+                    lambda v: "" if v is None or str(v).strip() in ("", "nan") else str(v).strip())
+                acc_w["_grain"] = (acc_w["Sub_Brand_Description"].astype(str)
+                                   + acc_w["_size"].apply(lambda s: f" / {s}" if s else ""))
+                # Net customers within each UPC first, then sum absolute errors
+                # across UPCs — netting any further collapses MAPE into |BIAS|.
+                per_upc = (acc_w.groupby(["_grain", "_k"], as_index=False)[[fc_c, act_c]].sum())
+                per_upc["_abs_err"] = (per_upc[fc_c] - per_upc[act_c]).abs()
+                rows_df = (per_upc.groupby("_grain")
                            .agg(IBP=(fc_c, "sum"), Actuals=(act_c, "sum"),
                                 Error=("_abs_err", "sum"))
                            .reset_index())
-                top10 = top10[top10["Actuals"] > 0]
-                top10["MAPE_v"] = top10["Error"] / top10["Actuals"] * 100
-                top10["Bias_v"] = (top10["IBP"] - top10["Actuals"]) / top10["Actuals"] * 100
-                top10 = top10.nlargest(10, "Actuals")
+                market_vol = rows_df["Actuals"].sum()      # whole market, not just top 10
+                rows_df = rows_df[rows_df["Actuals"] > 0]
+                rows_df["FcstErr"] = rows_df["Actuals"] - rows_df["IBP"]
+                rows_df["PctVol"]  = rows_df["Actuals"] / market_vol * 100 if market_vol else 0
+                rows_df["MAPE_v"]  = rows_df["Error"]   / rows_df["Actuals"] * 100
+                # BIAS is undefined with no plan; PBI shows 100% there
+                rows_df["Bias_v"]  = rows_df.apply(
+                    lambda r: 100.0 if r["IBP"] == 0 else r["FcstErr"] / r["IBP"] * 100, axis=1)
+                top10 = rows_df.nlargest(10, "Actuals")
 
                 tot_ibp  = top10["IBP"].sum()
                 tot_act  = top10["Actuals"].sum()
                 tot_err  = top10["Error"].sum()
+                tot_fe   = tot_act - tot_ibp
+                tot_pct  = tot_act / market_vol * 100 if market_vol else 0
                 tot_mape = tot_err / tot_act * 100 if tot_act > 0 else 0
-                tot_bias = (tot_ibp - tot_act) / tot_act * 100 if tot_act > 0 else 0
+                tot_bias = tot_fe / tot_ibp * 100 if tot_ibp > 0 else 100.0
 
-                acc_hdrs = ['Sub-Brand', 'IBP (n-3)', 'Actuals', 'Abs Error', 'wMAPE', 'Bias%']
+                acc_hdrs = ['Sub Brand / Size', 'IBP', 'Actual Sales', 'Forecast Error',
+                            'Error ABS UPC', '% VOL', 'Mape. UPC', 'BIAS']
                 acc_rows = []
                 for _, r in top10.iterrows():
                     acc_rows.append([
-                        r["Sub_Brand_Description"],
+                        r["_grain"],
                         _fmt(r["IBP"]),
                         _fmt(r["Actuals"]),
-                        _fmt(r["Error"]),
-                        f"{r['MAPE_v']:.1f}%",
-                        _pct(r["Bias_v"]),
+                        _fmt(r["FcstErr"]),
+                        f"{r['Error']:,.2f}",
+                        f"{r['PctVol']:.2f}%",
+                        f"{r['MAPE_v']:.2f}%",
+                        f"{r['Bias_v']:.2f}%",
                     ])
-                acc_rows.append(['TOTAL', _fmt(tot_ibp), _fmt(tot_act),
-                                  _fmt(tot_err), f"{tot_mape:.1f}%", _pct(tot_bias)])
+                acc_rows.append(['TOTAL', _fmt(tot_ibp), _fmt(tot_act), _fmt(tot_fe),
+                                 f"{tot_err:,.2f}", f"{tot_pct:.2f}%",
+                                 f"{tot_mape:.2f}%", f"{tot_bias:.2f}%"])
                 story += dtbl(acc_hdrs, acc_rows,
-                               [5.0*cm, 2.0*cm, 2.0*cm, 2.0*cm, 1.8*cm, 1.8*cm])
+                               [4.6*cm, 1.9*cm, 2.1*cm, 2.2*cm,
+                                2.2*cm, 1.6*cm, 1.9*cm, 1.7*cm])
 
                 if gpt_client:
                     worst = top10.nlargest(1, "MAPE_v")
                     commentary = _gpt(
                         f"Market: {country} {sub_segment}. Month: {acc_last} 2026. "
                         f"Overall wMAPE: {tot_mape:.1f}%, Bias: {_pct(tot_bias)}. "
-                        f"Top error driver: {worst.iloc[0]['Sub_Brand_Description']} "
+                        f"Top error driver: {worst.iloc[0]['_grain']} "
                         f"(MAPE {worst.iloc[0]['MAPE_v']:.1f}%, Bias {_pct(worst.iloc[0]['Bias_v'])}). "
                         f"Write 2-3 sentences of demand planning insight on this forecast accuracy.",
                         gpt_client,

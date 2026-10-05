@@ -118,7 +118,8 @@ def fetch_accuracy(country: str, sub_segment: str,
             SELECT Material_Number, Country_Name, Customer_Number,
                    ANY_VALUE(Sub_Brand_Description) AS Sub_Brand_Description,
                    ANY_VALUE(UPC_Code)              AS UPC_Code,
-                   ANY_VALUE(Brand_Family)          AS Brand_Family
+                   ANY_VALUE(Brand_Family)          AS Brand_Family,
+                   ANY_VALUE(Volume)                AS Volume
             FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
             WHERE Country_Name = @country AND Sub_Segments = @sub_segment
             GROUP BY 1, 2, 3
@@ -135,7 +136,8 @@ def fetch_accuracy(country: str, sub_segment: str,
             SELECT Material_Number, Country_Name,
                    ANY_VALUE(Sub_Brand_Description) AS Sub_Brand_Description,
                    ANY_VALUE(UPC_Code)              AS UPC_Code,
-                   ANY_VALUE(Brand_Family)          AS Brand_Family
+                   ANY_VALUE(Brand_Family)          AS Brand_Family,
+                   ANY_VALUE(Volume)                AS Volume
             FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
             WHERE Country_Name = @country AND Sub_Segments = @sub_segment
             GROUP BY 1, 2
@@ -147,6 +149,7 @@ def fetch_accuracy(country: str, sub_segment: str,
             COALESCE(c.Sub_Brand_Description, m.Sub_Brand_Description) AS Sub_Brand_Description,
             COALESCE(c.UPC_Code,              m.UPC_Code)              AS UPC_Code,
             COALESCE(c.Brand_Family,          m.Brand_Family)          AS Brand_Family,
+            COALESCE(c.Volume,                m.Volume)                AS Volume,
             {lag_cols}
         FROM `{GCP_PROJECT}.{DATASET}.lag1_data` l
         LEFT JOIN ca_cust c
