@@ -736,6 +736,14 @@ def build_prework_pdf(
                 acc_w = acc[["Material_Number", "Sub_Brand_Description", "Volume",
                              "UPC_Code", fc_c, act_c]].copy()
                 acc_w[[fc_c, act_c]] = acc_w[[fc_c, act_c]].fillna(0)
+                # Canonicalise BEFORE building the UPC key: ~15% of rows carry
+                # no UPC (Aera's own master has "Not Set" for them), so they fall
+                # back to sub-brand — which must already be the canonical spelling
+                # or the same product splits into several UPC groups.
+                _cmap0 = _canon_subbrand_map(acc_w["Sub_Brand_Description"])
+                acc_w["Sub_Brand_Description"] = (acc_w["Sub_Brand_Description"]
+                                                  .map(_cmap0)
+                                                  .fillna(acc_w["Sub_Brand_Description"]))
                 acc_w["_k"]    = _upc_key(acc_w)
                 acc_w["_size"] = acc_w["Volume"].apply(_fmt_size)
                 # One sub-brand/size per MATERIAL, taken as the modal value.
@@ -744,10 +752,6 @@ def build_prework_pdf(
                 # (0.3300 vs 0.33); grouping row-by-row would split one product
                 # across several table rows and understate each. 22 materials in
                 # Australia IMC alone are affected.
-                _cmap = _canon_subbrand_map(acc_w["Sub_Brand_Description"])
-                acc_w["Sub_Brand_Description"] = (acc_w["Sub_Brand_Description"]
-                                                  .map(_cmap)
-                                                  .fillna(acc_w["Sub_Brand_Description"]))
                 modal = (acc_w.groupby(["Material_Number", "Sub_Brand_Description", "_size"])
                               .size().reset_index(name="_n")
                               .sort_values(["Material_Number", "_n"], ascending=[True, False])
