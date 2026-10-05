@@ -182,6 +182,20 @@ def _pct(v):
     return f"{sign}{v:.1f}%"
 
 
+# ── Pack-size successions ─────────────────────────────────────────────────────
+# Aera cannot chain a retiring SKU to a new one across pack sizes — SKU Updates
+# rejects it with SUBBRAND_SIZE_MISMATCH — so a pack changeover leaves the
+# forecast stranded on the dead code while sales land on the new one, and
+# accuracy reports it twice: once as forecast with no sales, once as sales with
+# no forecast. These pairs are the chains the business intended (as filed in
+# SKU_Update_upload_Kraken_330_to_375.csv), applied here for reporting only.
+SKU_SUCCESSORS = {
+    "311808": "311814",   # Kraken Rum & Cola 6x4 330ml -> 375ml
+    "311809": "311815",   # Kraken Rum & Dry  6x4 330ml -> 375ml
+    "311812": "311814",   # Kraken Rum & Cola 10x3 330ml -> 6x4 375ml
+}
+
+
 def _fmt_size(v):
     """Pack size as the BI report shows it: 0.3300 -> 0.33, 1.0000 -> 1."""
     try:
@@ -739,6 +753,33 @@ def build_prework_pdf(
                 acc_w = acc[["Material_Number", "Sub_Brand_Description", "Volume",
                              "UPC_Code", fc_c, act_c]].copy()
                 acc_w[[fc_c, act_c]] = acc_w[[fc_c, act_c]].fillna(0)
+                # Re-key retired packs onto their successor so the changeover is
+                # one line instead of two mirror-image errors.
+                _chained = acc_w["Material_Number"].isin(SKU_SUCCESSORS)
+                if _chained.any():
+                    _succ = acc_w.loc[_chained, "Material_Number"].map(SKU_SUCCESSORS)
+                    _attr = (acc_w[~_chained]
+                             .drop_duplicates("Material_Number")
+                             .set_index("Material_Number")[["Sub_Brand_Description",
+                                                            "Volume"]])
+                    # Take the successor's sub-brand/size, but NOT its UPC — the
+                    # new codes have none, while the retiring ones do, and the
+                    # UPC is what the error measure keys on.
+                    for col in ["Sub_Brand_Description", "Volume"]:
+                        _new = _succ.map(_attr[col])
+                        acc_w.loc[_chained, col] = _new.fillna(acc_w.loc[_chained, col])
+                    acc_w.loc[_chained, "Material_Number"] = _succ
+
+                # UPC is a property of the material, not of the customer row, but
+                # it is blank on some rows of a material and populated on others.
+                # Fill each material from whichever of its rows carries one — this
+                # also lets a chained pack inherit its predecessor's UPC.
+                _u = acc_w["UPC_Code"].fillna("").astype(str).str.strip()
+                _first = (acc_w.assign(_u=_u)[lambda d: d["_u"] != ""]
+                               .drop_duplicates("Material_Number")
+                               .set_index("Material_Number")["_u"])
+                acc_w["UPC_Code"] = _u.where(_u != "",
+                                             acc_w["Material_Number"].map(_first)).fillna("")
                 # Canonicalise BEFORE building the UPC key: ~15% of rows carry
                 # no UPC (Aera's own master has "Not Set" for them), so they fall
                 # back to sub-brand — which must already be the canonical spelling
