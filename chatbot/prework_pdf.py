@@ -735,7 +735,7 @@ def build_prework_pdf(
     monthly_stats = []
     if not acc.empty and CLOSED_2026:
         for m in CLOSED_2026:
-            fc_c  = f"Fcst4M_{m}_2026"
+            fc_c  = f"Fcst3M_{m}_2026"
             act_c = f"Actual_{m}_2026"
             if fc_c not in acc.columns or act_c not in acc.columns:
                 continue
@@ -771,7 +771,7 @@ def build_prework_pdf(
     months_str   = ", ".join(avail_months) if avail_months else "none yet"
     story.append(Paragraph(
         f'IBP n-3 forecast accuracy across closed months of 2026 '
-        f'({months_str}). The n-3 forecast is the consensus snapshot frozen 4 '
+        f'({months_str}). The n-3 forecast is the consensus snapshot frozen 3 '
         f'calendar months before each target month — the same convention as the '
         f'Power BI accuracy report. '
         f'wMAPE and Bias are measured at UPC level — customers are netted within '
@@ -799,7 +799,7 @@ def build_prework_pdf(
                 f'3.1  Last Month Top 10 By Volume — {acc_last} 2026  '
                 f'(IBP n-3 vs Actual Sales, by Sub-Brand / Size)',
                 ST['sub']))
-            fc_c  = f"Fcst4M_{acc_last}_2026"
+            fc_c  = f"Fcst3M_{acc_last}_2026"
             act_c = f"Actual_{acc_last}_2026"
 
             if fc_c in acc.columns and act_c in acc.columns:

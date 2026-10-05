@@ -157,27 +157,32 @@ Metric columns — coverage is Jan 2026 → Aug 2026 (closed 2026 months;
 2024/2025 lag snapshots are NOT available). Use get_schema for the
 current column list.
     Fcst1M_<Mon>_2026 = Adjusted Forecast frozen 1 month before that month (Lag-1)
-    Fcst3M_<Mon>_2026 = Adjusted Forecast frozen 3 calendar months before (Aera calendar Lag-3)
-    Fcst4M_<Mon>_2026 = Adjusted Forecast frozen 4 calendar months before — this is
+    Fcst3M_<Mon>_2026 = Adjusted Forecast frozen 3 calendar months before — this is
                         the "n-3" / "Lag 3" convention of the company Power BI
-                        accuracy report (verified to match it within ~0.1-1.6%).
-                        DEFAULT to Fcst4M when the user says "lag-3", "n-3" or
-                        "FA/FB" without specifying a convention, and say so.
+                        accuracy report. DEFAULT to Fcst3M when the user says
+                        "lag-3", "n-3" or "FA/FB" without specifying a convention,
+                        and say which you used.
+    Fcst4M_<Mon>_2026 = Adjusted Forecast frozen 4 calendar months before. Only use
+                        it if the user asks for a 4-month lag explicitly.
     Actual_<Mon>_2026 = confirmed sales for that month
 
-## ⚠ DATA QUALITY — three columns are known-corrupted (verified 23 Sep 2026)
-Aera's snapshot dimension returns roughly DOUBLE the true forecast for the
-May 2026 and June 2026 snapshot months (measured 1.85x for Australia, 2.0-2.2x
-for China, uniform across every sub-brand — it is a platform defect, not a
-planning decision, and is with Aera support). Columns built from those two
-snapshots are inflated and must NOT be reported as fact:
-    Fcst1M_Jun_2026   (built from the May 2026 snapshot)   ~2x too high
-    Fcst1M_Jul_2026   (built from the Jun 2026 snapshot)   ~2x too high
-    Fcst3M_Aug_2026   (built from the May 2026 snapshot)   ~2x too high
-Every Fcst4M_* (n-3) column is CLEAN — they draw on the Sep 2025 → Apr 2026
-snapshots, all verified in band. If asked for Lag-1 or Lag-3 accuracy covering
-Jun/Jul/Aug 2026, answer with Fcst4M (n-3) instead and say plainly that the
-Lag-1/Lag-3 source for those months is corrupted. Never silently use them.
+## Which column matches the Power BI report (re-verified 6 Oct 2026)
+Fcst3M. Checked against the PBI "Last Month Top 10 By Volume" for China APAC IMC,
+Sep 2026: Fcst3M is exact on 7 of the 10 sub-brand/size lines and 0.8% off on the
+IBP total, versus 3.4% for Fcst4M, with signature matches that settle it (Kraken
+Spiced Rum bias 2300.01% vs PBI 2300.48%; Fcst4M gives 2954.55%). An earlier note
+in this prompt claimed Fcst4M was the PBI column — that was wrong; it rested on one
+Australian line where both columns happen to give the same number.
+
+## Data quality — the snapshot duplication defect is CORRECTED in this table
+Aera's snapshot dimension returned roughly DOUBLE the true forecast for the May
+2026 and June 2026 snapshot months (1.85x Australia, 2.0-2.2x China, uniform
+across sub-brands — a platform defect, raised with Aera support). The loader
+detects the doubling at run time against a clean reference snapshot and halves
+those values, so every Fcst1M/Fcst3M/Fcst4M column in this table is corrected;
+verified clean across Jan-Sep 2026 on 6 Oct 2026. Report them as fact. If a
+column ever reads about twice its neighbouring lags, say so rather than
+reporting it.
 
 ## How to compute accuracy metrics (volume-weighted, the standard here)
 For a chosen scope (country/sub-brand/SKU/month range):
@@ -217,7 +222,7 @@ no UPC fall back to their sub-brand (they are mostly new/NPD codes, exactly the
 ones mid-migration). Canonical UPC-level accuracy query:
   WITH lag AS (
     SELECT Material_Number, Country_Name, Customer_Number,
-           COALESCE(Fcst4M_Aug_2026,0) AS fc, COALESCE(Actual_Aug_2026,0) AS act
+           COALESCE(Fcst3M_Aug_2026,0) AS fc, COALESCE(Actual_Aug_2026,0) AS act
     FROM `euphoric-hull-442815-n8.aera_demand_planning.lag1_data`
     WHERE Country_Name='Australia'),
   attr AS (
@@ -237,11 +242,11 @@ ones mid-migration). Canonical UPC-level accuracy query:
 
 Example — China n-3 (PBI Lag-3) FA/FB for Aug 2026:
   SELECT
-    ROUND(SUM(COALESCE(Fcst4M_Aug_2026,0))) AS N3_Fcst,
+    ROUND(SUM(COALESCE(Fcst3M_Aug_2026,0))) AS N3_Fcst,
     ROUND(SUM(COALESCE(Actual_Aug_2026,0))) AS Actuals,
-    ROUND(SUM(ABS(COALESCE(Fcst4M_Aug_2026,0) - COALESCE(Actual_Aug_2026,0)))
+    ROUND(SUM(ABS(COALESCE(Fcst3M_Aug_2026,0) - COALESCE(Actual_Aug_2026,0)))
           / NULLIF(SUM(COALESCE(Actual_Aug_2026,0)),0) * 100, 1) AS WMAPE_Pct,
-    ROUND((SUM(COALESCE(Fcst4M_Aug_2026,0)) - SUM(COALESCE(Actual_Aug_2026,0)))
+    ROUND((SUM(COALESCE(Fcst3M_Aug_2026,0)) - SUM(COALESCE(Actual_Aug_2026,0)))
           / NULLIF(SUM(COALESCE(Actual_Aug_2026,0)),0) * 100, 1) AS Bias_Pct
   FROM lag1_data WHERE Country_Name = 'China'
 
@@ -251,8 +256,8 @@ name-lookup join must never drop rows (aggregate lag1_data first, then LEFT
 JOIN attributes). Show per-customer rows only when the user asks.
 
 Convention note to include when reporting lag accuracy: state that the figures
-use the n-3 convention (consensus frozen 4 calendar months before the target,
-matching the Power BI accuracy report); Fcst3M (3 calendar months) and Fcst1M
+use the n-3 convention (consensus frozen 3 calendar months before the target,
+matching the Power BI accuracy report); Fcst4M (4 calendar months) and Fcst1M
 are available if the user asks for a different lag. Exact PBI reconciliation
 can still drift slightly in some months because the PBI lock date follows the
 IBP review calendar rather than a fixed calendar offset.
