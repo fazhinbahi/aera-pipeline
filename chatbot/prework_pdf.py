@@ -182,6 +182,43 @@ def _pct(v):
     return f"{sign}{v:.1f}%"
 
 
+def _fmt_size(v):
+    """Pack size as the BI report shows it: 0.3300 -> 0.33, 1.0000 -> 1."""
+    try:
+        return "%g" % float(str(v))
+    except (TypeError, ValueError):
+        s = str(v).strip()
+        return "" if s.lower() in ("", "nan", "none") else s
+
+
+def _canon_subbrand_map(values) -> dict:
+    """Map each raw sub-brand spelling to one canonical label.
+
+    The master data carries the same sub-brand two ways — "JOSE CUERVO ESPECIAL
+    SILVER" alongside "JC Especial Silver", and names truncated at 20 chars
+    ("JC Sparkling Margari" for "...Margarita"). Left alone these split one
+    product across several rows of the table. Merge on the normalised form, and
+    only treat a prefix as a truncation when it really looks like one, so
+    genuinely distinct short sub-brands are never folded together.
+    """
+    raws = [v for v in dict.fromkeys(values) if str(v).strip() not in ("", "nan", "None")]
+    norm = {v: " ".join(str(v).upper().split()).replace("JOSE CUERVO", "JC") for v in raws}
+
+    canon: dict = {}
+    for k in sorted(set(norm.values()), key=len):          # shortest first
+        # canon only holds keys already seen, i.e. no longer than k
+        match = next((c for c in canon
+                      if k.startswith(c) and len(c) >= 15 and len(k) - len(c) <= 6), None)
+        canon[k] = canon[match] if match else k
+
+    label: dict = {}                                        # longest spelling wins
+    for raw, n in norm.items():
+        c = canon[n]
+        if c not in label or len(str(raw)) > len(str(label[c])):
+            label[c] = raw
+    return {raw: label[canon[n]] for raw, n in norm.items()}
+
+
 def _col_sum(df, col):
     return df[col].sum() if col in df.columns else 0
 
@@ -696,12 +733,28 @@ def build_prework_pdf(
                 #   % VOL          = share of the WHOLE market's actual volume
                 #   Mape. UPC      = Error ABS UPC / Actual
                 #   BIAS           = Forecast Error / IBP
-                acc_w = acc[["Sub_Brand_Description", "Volume", "UPC_Code",
-                             fc_c, act_c]].copy()
+                acc_w = acc[["Material_Number", "Sub_Brand_Description", "Volume",
+                             "UPC_Code", fc_c, act_c]].copy()
                 acc_w[[fc_c, act_c]] = acc_w[[fc_c, act_c]].fillna(0)
                 acc_w["_k"]    = _upc_key(acc_w)
-                acc_w["_size"] = acc_w["Volume"].apply(
-                    lambda v: "" if v is None or str(v).strip() in ("", "nan") else str(v).strip())
+                acc_w["_size"] = acc_w["Volume"].apply(_fmt_size)
+                # One sub-brand/size per MATERIAL, taken as the modal value.
+                # A minority of rows carry an alternate spelling ("JOSE CUERVO
+                # SPARKLING MARGARITA" vs "JC Sparkling Margari") or size format
+                # (0.3300 vs 0.33); grouping row-by-row would split one product
+                # across several table rows and understate each. 22 materials in
+                # Australia IMC alone are affected.
+                _cmap = _canon_subbrand_map(acc_w["Sub_Brand_Description"])
+                acc_w["Sub_Brand_Description"] = (acc_w["Sub_Brand_Description"]
+                                                  .map(_cmap)
+                                                  .fillna(acc_w["Sub_Brand_Description"]))
+                modal = (acc_w.groupby(["Material_Number", "Sub_Brand_Description", "_size"])
+                              .size().reset_index(name="_n")
+                              .sort_values(["Material_Number", "_n"], ascending=[True, False])
+                              .drop_duplicates("Material_Number")
+                              [["Material_Number", "Sub_Brand_Description", "_size"]])
+                acc_w = (acc_w.drop(columns=["Sub_Brand_Description", "_size"])
+                              .merge(modal, on="Material_Number", how="left"))
                 acc_w["_grain"] = (acc_w["Sub_Brand_Description"].astype(str)
                                    + acc_w["_size"].apply(lambda s: f" / {s}" if s else ""))
                 # Net customers within each UPC first, then sum absolute errors
