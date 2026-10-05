@@ -704,7 +704,10 @@ def build_prework_pdf(
         f'wMAPE and Bias are measured at UPC level — customers are netted within '
         f'each UPC, then absolute errors are summed across UPCs — matching Aera\'s '
         f'Forecast Accuracy dashboard ("Accuracy UPC Code" tab) and the Power BI '
-        f'Mape. UPC measure.',
+        f'Mape. UPC measure. In 3.1 below, Error ABS UPC counts only materials '
+        f'carrying a UPC, as the Power BI measure does; roughly 15% of rows have '
+        f'no UPC in the Aera master, so their volume is shown but their error is '
+        f'not.',
         ST['body']))
     story.append(sp(4))
 
@@ -761,14 +764,21 @@ def build_prework_pdf(
                               .merge(modal, on="Material_Number", how="left"))
                 acc_w["_grain"] = (acc_w["Sub_Brand_Description"].astype(str)
                                    + acc_w["_size"].apply(lambda s: f" / {s}" if s else ""))
-                # Net customers within each UPC first, then sum absolute errors
-                # across UPCs — netting any further collapses MAPE into |BIAS|.
-                per_upc = (acc_w.groupby(["_grain", "_k"], as_index=False)[[fc_c, act_c]].sum())
+                # Volume columns cover every row. Error ABS UPC covers only
+                # materials that actually carry a UPC — the Power BI measure
+                # iterates over UPC, so a material whose UPC is "Not Set" in the
+                # Aera master (~15% of rows) contributes no error while its
+                # volume still counts. Reproduced here for comparability; it does
+                # mean a wholly unforecast no-UPC line can show 0% MAPE.
+                vol_df = acc_w.groupby("_grain", as_index=False)[[fc_c, act_c]].sum()
+                has_upc = acc_w[acc_w["UPC_Code"].fillna("").astype(str).str.strip() != ""]
+                per_upc = (has_upc.groupby(["_grain", "_k"], as_index=False)[[fc_c, act_c]].sum())
                 per_upc["_abs_err"] = (per_upc[fc_c] - per_upc[act_c]).abs()
-                rows_df = (per_upc.groupby("_grain")
-                           .agg(IBP=(fc_c, "sum"), Actuals=(act_c, "sum"),
-                                Error=("_abs_err", "sum"))
-                           .reset_index())
+                err_df = (per_upc.groupby("_grain", as_index=False)["_abs_err"].sum()
+                                 .rename(columns={"_abs_err": "Error"}))
+                rows_df = (vol_df.merge(err_df, on="_grain", how="left")
+                                 .rename(columns={fc_c: "IBP", act_c: "Actuals"}))
+                rows_df["Error"] = rows_df["Error"].fillna(0)
                 market_vol = rows_df["Actuals"].sum()      # whole market, not just top 10
                 rows_df = rows_df[rows_df["Actuals"] > 0]
                 rows_df["FcstErr"] = rows_df["Actuals"] - rows_df["IBP"]
