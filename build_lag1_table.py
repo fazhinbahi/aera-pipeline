@@ -66,6 +66,39 @@ LAG3_PAIRS = [(_shift(m, -3), m) for m in FORECAST_MONTHS]
 # accuracy report (verified: matches PBI within ~0.1-1.6% at pack level)
 LAG4_PAIRS = [(_shift(m, -4), m) for m in FORECAST_MONTHS]
 
+# ── Corrupted source snapshots ────────────────────────────────────────────────
+# Aera's snapshot dimension returns each grain EXACTLY TWICE for some snapshot
+# months, and the BIO sums them before we see the rows (one row per grain, value
+# doubled). Confirmed 23 Sep and still present 5 Oct 2026. Evidence: holding one
+# target month fixed, every other snapshot sits in a tight band while these read
+# ~2x, and the per-grain ratio against clean neighbours has median exactly 2.00.
+# Raised with Aera; halve while it persists.
+SUSPECT_SNAPSHOTS = ["May 2026", "Jun 2026"]
+CALIBRATION_TARGET = "Aug 2026"   # a closed month every snapshot here forecasts
+
+
+def detect_doubled(token, jsessionid, lb, clean_ref="Apr 2026"):
+    """Confirm at runtime which suspect snapshots are still doubled.
+
+    Never trust the hardcoded list blindly: if Aera fixes the feed, applying the
+    correction anyway would halve good data. Compare each suspect against a
+    known-clean snapshot for the same target and only correct on a clear ~2x.
+    """
+    base = fetch_lag_pair(clean_ref, CALIBRATION_TARGET, token, jsessionid, lb)
+    base_total = base["Adjusted_FC"].sum()
+    doubled = []
+    for snap in SUSPECT_SNAPSHOTS:
+        if snap not in [s for s, _ in LAG1_PAIRS + LAG3_PAIRS + LAG4_PAIRS]:
+            continue
+        t = fetch_lag_pair(snap, CALIBRATION_TARGET, token, jsessionid, lb)["Adjusted_FC"].sum()
+        ratio = t / base_total if base_total else 0
+        if 1.6 <= ratio <= 2.4:
+            doubled.append(snap)
+            print(f"    ⚠ {snap} snapshot reads {ratio:.2f}x clean — halving its values")
+        else:
+            print(f"    ✓ {snap} snapshot reads {ratio:.2f}x clean — no correction")
+    return set(doubled)
+
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 
@@ -224,12 +257,22 @@ def main():
 
     KEY = ["Material_Number", "Country_Name", "Customer_Number"]
 
+    print("\nCalibrating snapshot feed for the known duplication defect...")
+    DOUBLED = detect_doubled(token, jsessionid, lb)
+
+    def _fix(df, snapshot, col):
+        """Halve a snapshot confirmed to be double-counted at source."""
+        if snapshot in DOUBLED:
+            df[col] = df[col] / 2.0
+        return df
+
     # ── Fetch all 5 Lag-1 pairs ───────────────────────────────────────────────
     print(f"Fetching Lag-1 forecasts ({len(LAG1_PAIRS)} months: {FORECAST_MONTHS[0]}–{FORECAST_MONTHS[-1]})...")
     lag1_frames = []
     for snapshot, forecast in LAG1_PAIRS:
         df = fetch_lag_pair(snapshot, forecast, token, jsessionid, lb)
-        df = df.rename(columns={"Adjusted_FC": f"Lag1_{forecast.replace(' ', '_')}"})
+        _c = f"Lag1_{forecast.replace(' ', '_')}"
+        df = _fix(df.rename(columns={"Adjusted_FC": _c}), snapshot, _c)
         lag1_frames.append(df)
 
     # ── Fetch all Lag-3 pairs ─────────────────────────────────────────────────
@@ -237,7 +280,8 @@ def main():
     lag3_frames = []
     for snapshot, forecast in LAG3_PAIRS:
         df = fetch_lag_pair(snapshot, forecast, token, jsessionid, lb)
-        df = df.rename(columns={"Adjusted_FC": f"Lag3_{forecast.replace(' ', '_')}"})
+        _c = f"Lag3_{forecast.replace(' ', '_')}"
+        df = _fix(df.rename(columns={"Adjusted_FC": _c}), snapshot, _c)
         lag3_frames.append(df)
 
     # ── Fetch all Lag-4 pairs (PBI n-3 convention) ────────────────────────────
@@ -245,7 +289,8 @@ def main():
     lag4_frames = []
     for snapshot, forecast in LAG4_PAIRS:
         df = fetch_lag_pair(snapshot, forecast, token, jsessionid, lb)
-        df = df.rename(columns={"Adjusted_FC": f"Lag4_{forecast.replace(' ', '_')}"})
+        _c = f"Lag4_{forecast.replace(' ', '_')}"
+        df = _fix(df.rename(columns={"Adjusted_FC": _c}), snapshot, _c)
         lag4_frames.append(df)
 
     # ── Merge all lag frames ──────────────────────────────────────────────────
