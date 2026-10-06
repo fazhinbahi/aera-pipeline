@@ -841,11 +841,10 @@ def build_prework_pdf(
     months_str   = ", ".join(avail_months) if avail_months else "none yet"
     story.append(Paragraph(
         f'IBP n-3 forecast accuracy across the closed months of 2026 '
-        f'({months_str}). For {country} {sub_segment} that is the consensus '
-        f'snapshot frozen <b>{lag_months(country, sub_segment)} calendar months</b> '
-        f'before the target month, matching this market\'s Power BI accuracy '
-        f'report — the IBP lock follows each market\'s review calendar, so the '
-        f'snapshot distance is set per market rather than assumed. '
+        f'({months_str}). For {country} {sub_segment} that is the snapshot frozen '
+        f'<b>{lag_months(country, sub_segment)} calendar months</b> before the '
+        f'target month, matching this market\'s Power BI report; the IBP lock '
+        f'follows each market\'s review calendar, so the distance is set per market. '
         f'wMAPE and Bias are measured at UPC level — customers netted within each '
         f'UPC, then absolute errors summed across UPCs — matching Aera\'s '
         f'"Accuracy UPC Code" tab and the Power BI Mape. UPC measure. Error ABS UPC '
@@ -1006,9 +1005,15 @@ def build_prework_pdf(
                                     n3_c:    f'{n3_m} {_y2} AdjFC n+3',
                                     n3_sply: f'{n3_m} {int(_y2) - 1} Act'}[c]
                                    for c in extra_cols])
-                    acc_cw   = ([4.4*cm, 1.2*cm, 1.3*cm, 1.3*cm, 1.5*cm,
-                                 1.1*cm, 1.55*cm, 1.45*cm]
-                                + [1.25*cm, 1.25*cm, 1.2*cm][:len(extra_cols)])
+                    # Sized to the widest value each column actually holds at 7pt
+                    # — "12,225.73" for the error, "100.00%" for the share (a
+                    # market whose top 10 is its whole range), "2300.01%" for a
+                    # bias against a near-zero plan. Whatever is left goes to the
+                    # label, which at 5.4cm keeps "JOSE CUERVO SPARKLING
+                    # MARGARITA / 0.33" on one line and the table on one page.
+                    acc_cw   = ([5.4*cm, 1.1*cm, 1.1*cm, 1.1*cm, 1.5*cm,
+                                 1.3*cm, 1.4*cm, 1.4*cm]
+                                + [1.1*cm] * len(extra_cols))
 
                 def _acc_row(label, ibp, act, fe, err, pct, mape, bias, extras):
                     return ([label, _fmt(ibp), _fmt(act), _fmt(fe), f"{err:,.2f}",
