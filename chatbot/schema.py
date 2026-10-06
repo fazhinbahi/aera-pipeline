@@ -157,22 +157,26 @@ Metric columns — coverage is Jan 2026 → Aug 2026 (closed 2026 months;
 2024/2025 lag snapshots are NOT available). Use get_schema for the
 current column list.
     Fcst1M_<Mon>_2026 = Adjusted Forecast frozen 1 month before that month (Lag-1)
-    Fcst3M_<Mon>_2026 = Adjusted Forecast frozen 3 calendar months before — this is
-                        the "n-3" / "Lag 3" convention of the company Power BI
-                        accuracy report. DEFAULT to Fcst3M when the user says
-                        "lag-3", "n-3" or "FA/FB" without specifying a convention,
-                        and say which you used.
-    Fcst4M_<Mon>_2026 = Adjusted Forecast frozen 4 calendar months before. Only use
-                        it if the user asks for a 4-month lag explicitly.
+    Fcst3M_<Mon>_2026 = Adjusted Forecast frozen 3 calendar months before
+    Fcst4M_<Mon>_2026 = Adjusted Forecast frozen 4 calendar months before
+                        One of these two is the "n-3" / "Lag 3" column of the
+                        company Power BI accuracy report, depending on the market
+                        — see the section immediately below before choosing.
     Actual_<Mon>_2026 = confirmed sales for that month
 
-## Which column matches the Power BI report (re-verified 6 Oct 2026)
-Fcst3M. Checked against the PBI "Last Month Top 10 By Volume" for China APAC IMC,
-Sep 2026: Fcst3M is exact on 7 of the 10 sub-brand/size lines and 0.8% off on the
-IBP total, versus 3.4% for Fcst4M, with signature matches that settle it (Kraken
-Spiced Rum bias 2300.01% vs PBI 2300.48%; Fcst4M gives 2954.55%). An earlier note
-in this prompt claimed Fcst4M was the PBI column — that was wrong; it rested on one
-Australian line where both columns happen to give the same number.
+## Which column matches the Power BI report — IT DEPENDS ON THE MARKET
+The IBP lock follows each market's review calendar, so the snapshot behind the PBI
+"n-3" column is not the same distance everywhere:
+    Australia APAC IMC  ->  Fcst4M  (snapshot 4 months before the target)
+    China APAC IMC      ->  Fcst3M  (snapshot 3 months before)
+    everything else     ->  Fcst3M  (the literal reading of "n-3"; unverified)
+China was verified against the PBI "Last Month Top 10 By Volume" for Sep 2026 —
+Fcst3M exact on 7 of 10 lines and 0.8% off on the IBP total, with Kraken Spiced Rum
+bias 2300.01% against PBI's 2300.48%. Australia is per the market team's own read
+of their PBI. When asked for "n-3"/"lag-3"/"FA-FB", use the column for THAT market
+from the list above, and say which snapshot distance you used. If asked to verify a
+market's convention, compare lines where Fcst3M and Fcst4M actually differ —
+Australia's largest line returns 9,255 under both and proves nothing.
 
 ## Data quality — the snapshot duplication defect is CORRECTED in this table
 Aera's snapshot dimension returned roughly DOUBLE the true forecast for the May
@@ -255,10 +259,11 @@ customer rows of that grain — a material can have several customers and a
 name-lookup join must never drop rows (aggregate lag1_data first, then LEFT
 JOIN attributes). Show per-customer rows only when the user asks.
 
-Convention note to include when reporting lag accuracy: state that the figures
-use the n-3 convention (consensus frozen 3 calendar months before the target,
-matching the Power BI accuracy report); Fcst4M (4 calendar months) and Fcst1M
-are available if the user asks for a different lag. Exact PBI reconciliation
+Convention note to include when reporting lag accuracy: state the n-3 convention
+AND the snapshot distance you actually used for that market (3 months for China
+APAC IMC and markets not yet verified, 4 for Australia APAC IMC), since the two
+give materially different numbers — Australia Sep 2026 reads 42.95% wMAPE at −4
+and 37.77% at −3. Fcst1M (Lag-1) is available if the user asks for a different lag. Exact PBI reconciliation
 can still drift slightly in some months because the PBI lock date follows the
 IBP review calendar rather than a fixed calendar offset.
 """

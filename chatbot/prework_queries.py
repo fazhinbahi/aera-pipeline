@@ -90,9 +90,34 @@ def fetch_customer_analysis(country: str, sub_segment: str,
     return _client().query(q, job_config=cfg).to_dataframe()
 
 
+# ── Which snapshot the Power BI "n-3" IBP column actually is ──────────────────
+# The IBP lock follows each market's review calendar, so the snapshot distance
+# behind that column is not the same everywhere, and it has to be set per market
+# against the PBI "Last Month Top 10 By Volume" rather than assumed:
+#   China APAC IMC      Fcst3M (−3)  — verified Sep 2026, 7 of 10 lines exact,
+#                                      IBP total within 0.8%
+#   Australia APAC IMC  Fcst4M (−4)  — per the market team's read of their PBI
+# Anything unverified falls back to −3, the literal reading of "n-3". When adding
+# a market here, check a line where the two columns differ: Australia's largest
+# line returns 9,255 under both and so proves nothing either way.
+LAG_BY_MARKET = {
+    ("Australia", "APAC IMC"): 4,
+}
+DEFAULT_LAG_MONTHS = 3
+
+
+def lag_months(country: str, sub_segment: str) -> int:
+    """Months between the IBP snapshot and the target month, for this market."""
+    return LAG_BY_MARKET.get((country, sub_segment), DEFAULT_LAG_MONTHS)
+
+
 def fetch_accuracy(country: str, sub_segment: str,
                    customer_numbers: Optional[list] = None) -> pd.DataFrame:
-    """lag1_data joined with customer_analysis for accuracy calculations."""
+    """lag1_data joined with customer_analysis for accuracy calculations.
+
+    The chosen lag column is aliased to IBP_<Mon>_2026 so callers never have to
+    know which snapshot this market locks on.
+    """
     if not CLOSED_2026:
         return pd.DataFrame()
 
@@ -101,15 +126,17 @@ def fetch_accuracy(country: str, sub_segment: str,
     # Only request months whose columns actually exist in lag1_data
     table = client.get_table(f"{GCP_PROJECT}.{DATASET}.lag1_data")
     existing = {f.name for f in table.schema}
+    lag_pfx   = f"Fcst{lag_months(country, sub_segment)}M"
     available = [
         m for m in CLOSED_2026
-        if f"Fcst3M_{m}_2026" in existing and f"Actual_{m}_2026" in existing
+        if f"{lag_pfx}_{m}_2026" in existing and f"Actual_{m}_2026" in existing
     ]
     if not available:
         return pd.DataFrame()
 
     lag_cols = ", ".join(
-        f"l.Fcst3M_{m}_2026, l.Actual_{m}_2026" for m in available
+        f"l.{lag_pfx}_{m}_2026 AS IBP_{m}_2026, l.Actual_{m}_2026"
+        for m in available
     )
     customer_clause = "AND l.Customer_Number IN UNNEST(@customer_numbers)" if customer_numbers else ""
     q = f"""

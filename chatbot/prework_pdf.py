@@ -26,7 +26,8 @@ from reportlab.platypus import (
     PageBreak, Image, HRFlowable,
 )
 
-from prework_queries import CLOSED_2026, OPEN_2026, LAST_CLOSED, _ALL_MONTHS
+from prework_queries import (CLOSED_2026, OPEN_2026, LAST_CLOSED, _ALL_MONTHS,
+                             lag_months)
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 NAVY    = colors.HexColor('#1B2B4B')
@@ -804,7 +805,7 @@ def build_prework_pdf(
     monthly_stats = []
     if not acc.empty and CLOSED_2026:
         for m in CLOSED_2026:
-            fc_c  = f"Fcst3M_{m}_2026"
+            fc_c  = f"IBP_{m}_2026"
             act_c = f"Actual_{m}_2026"
             if fc_c not in acc.columns or act_c not in acc.columns:
                 continue
@@ -840,8 +841,11 @@ def build_prework_pdf(
     months_str   = ", ".join(avail_months) if avail_months else "none yet"
     story.append(Paragraph(
         f'IBP n-3 forecast accuracy across the closed months of 2026 '
-        f'({months_str}). n-3 is the consensus snapshot frozen 3 calendar months '
-        f'before the target month, the convention of the Power BI accuracy report. '
+        f'({months_str}). For {country} {sub_segment} that is the consensus '
+        f'snapshot frozen <b>{lag_months(country, sub_segment)} calendar months</b> '
+        f'before the target month, matching this market\'s Power BI accuracy '
+        f'report — the IBP lock follows each market\'s review calendar, so the '
+        f'snapshot distance is set per market rather than assumed. '
         f'wMAPE and Bias are measured at UPC level — customers netted within each '
         f'UPC, then absolute errors summed across UPCs — matching Aera\'s '
         f'"Accuracy UPC Code" tab and the Power BI Mape. UPC measure. Error ABS UPC '
@@ -878,7 +882,7 @@ def build_prework_pdf(
                 f'{_n_plus(4)[0]} {_n_plus(4)[1]}.',
                 ST['source']))
             story.append(sp(3))
-            fc_c  = f"Fcst3M_{acc_last}_2026"
+            fc_c  = f"IBP_{acc_last}_2026"
             act_c = f"Actual_{acc_last}_2026"
 
             if fc_c in acc.columns and act_c in acc.columns:
