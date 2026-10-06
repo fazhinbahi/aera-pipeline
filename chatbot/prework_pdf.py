@@ -135,8 +135,12 @@ def callout(lines, bg=AMBER):
     return [inner, sp(5)]
 
 
-def dtbl(headers, rows, col_w, center_from=1, font_size=8.5):
-    """Styled data table. Columns >= center_from are center-aligned."""
+def dtbl(headers, rows, col_w, center_from=1, font_size=8.5, pad=5):
+    """Styled data table. Columns >= center_from are center-aligned.
+
+    `pad` is the horizontal cell padding; drop it on wide tables, where the
+    default costs more width than the numbers do.
+    """
     def _st(base_key):
         """Return style, optionally with font_size override."""
         if font_size == 8.5:
@@ -168,8 +172,8 @@ def dtbl(headers, rows, col_w, center_from=1, font_size=8.5):
         ('LINEBELOW',     (0, 0), (-1, 0),  1,   NAVY),
         ('TOPPADDING',    (0, 0), (-1, -1), 4),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('LEFTPADDING',   (0, 0), (-1, -1), 5),
-        ('RIGHTPADDING',  (0, 0), (-1, -1), 5),
+        ('LEFTPADDING',   (0, 0), (-1, -1), pad),
+        ('RIGHTPADDING',  (0, 0), (-1, -1), pad),
     ]
     for ri, row in enumerate(rows):
         if str(row[0]).strip().lower().startswith('total'):
@@ -177,7 +181,7 @@ def dtbl(headers, rows, col_w, center_from=1, font_size=8.5):
                 ('BACKGROUND', (0, ri+1), (-1, ri+1), TOTROW),
                 ('LINEABOVE',  (0, ri+1), (-1, ri+1), 0.8, NAVY),
             ]
-    t = Table(data, colWidths=col_w)
+    t = Table(data, colWidths=col_w, repeatRows=1)
     t.setStyle(TableStyle(styles))
     return [t, sp(5)]
 
@@ -250,6 +254,71 @@ SKU_SUCCESSORS = {
     "311809": "311815",   # Kraken Rum & Dry  6x4 330ml -> 375ml
     "311812": "311814",   # Kraken Rum & Cola 10x3 330ml -> 6x4 375ml
 }
+
+
+def _n_plus(k: int):
+    """The month k ahead of the current one, as (abbrev, year).
+
+    n+3 is read off the live calendar, not off the reported accuracy month: in
+    October the planning question is January, and in November it becomes
+    February without anyone editing this file.
+    """
+    z = datetime.date.today()
+    m = z.month - 1 + k
+    return _ALL_MONTHS[m % 12], z.year + m // 12
+
+
+def _chain(df, cols):
+    """Re-key retired pack codes onto their successor, carrying `cols` over.
+
+    Applied to the order-history frame as well as the accuracy frame, so a
+    changeover's prior-year sales land on the line that replaced it instead of
+    on a code that no longer appears.
+    """
+    hit = df["Material_Number"].isin(SKU_SUCCESSORS)
+    if not hit.any():
+        return df
+    succ = df.loc[hit, "Material_Number"].map(SKU_SUCCESSORS)
+    attr = (df[~hit].drop_duplicates("Material_Number")
+                    .set_index("Material_Number")[list(cols)])
+    for c in cols:
+        df.loc[hit, c] = succ.map(attr[c]).fillna(df.loc[hit, c])
+    df.loc[hit, "Material_Number"] = succ
+    return df
+
+
+def _attach_grain(frames):
+    """Label every frame with the same Sub-Brand / Size grain.
+
+    The canonical sub-brand map and the modal Material -> (sub-brand, size)
+    table are built from all the frames together. Built per frame instead, the
+    accuracy rows and the order-history rows can disagree on one product's
+    spelling or size format, and it then appears as two half-populated lines.
+    """
+    allsb = pd.concat([f["Sub_Brand_Description"] for f in frames], ignore_index=True)
+    cmap  = _canon_subbrand_map(allsb)
+    out = []
+    for f in frames:
+        f = f.copy()
+        f["Sub_Brand_Description"] = (f["Sub_Brand_Description"].map(cmap)
+                                      .fillna(f["Sub_Brand_Description"]))
+        f["_size"] = f["Volume"].apply(_fmt_size)
+        out.append(f)
+    modal = (pd.concat([f[["Material_Number", "Sub_Brand_Description", "_size"]]
+                        for f in out], ignore_index=True)
+               .groupby(["Material_Number", "Sub_Brand_Description", "_size"])
+               .size().reset_index(name="_n")
+               .sort_values(["Material_Number", "_n"], ascending=[True, False])
+               .drop_duplicates("Material_Number")
+               [["Material_Number", "Sub_Brand_Description", "_size"]])
+    final = []
+    for f in out:
+        f = (f.drop(columns=["Sub_Brand_Description", "_size"])
+               .merge(modal, on="Material_Number", how="left"))
+        f["_grain"] = (f["Sub_Brand_Description"].astype(str)
+                       + f["_size"].apply(lambda s: f" / {s}" if s else ""))
+        final.append(f)
+    return final
 
 
 def _fmt_size(v):
@@ -770,24 +839,22 @@ def build_prework_pdf(
     avail_months = [d['month'] for d in monthly_stats] if monthly_stats else []
     months_str   = ", ".join(avail_months) if avail_months else "none yet"
     story.append(Paragraph(
-        f'IBP n-3 forecast accuracy across closed months of 2026 '
-        f'({months_str}). The n-3 forecast is the consensus snapshot frozen 3 '
-        f'calendar months before each target month — the same convention as the '
-        f'Power BI accuracy report. '
-        f'wMAPE and Bias are measured at UPC level — customers are netted within '
-        f'each UPC, then absolute errors are summed across UPCs — matching Aera\'s '
-        f'Forecast Accuracy dashboard ("Accuracy UPC Code" tab) and the Power BI '
-        f'Mape. UPC measure. In 3.1 below, Error ABS UPC counts only materials '
-        f'carrying a UPC, as the Power BI measure does; roughly 15% of rows have '
-        f'no UPC in the Aera master, so their volume is shown but their error is '
-        f'not. Section 3.2 opens each of those ten lines down to UPC and material '
-        f'code so the drivers are visible.',
+        f'IBP n-3 forecast accuracy across the closed months of 2026 '
+        f'({months_str}). n-3 is the consensus snapshot frozen 3 calendar months '
+        f'before the target month, the convention of the Power BI accuracy report. '
+        f'wMAPE and Bias are measured at UPC level — customers netted within each '
+        f'UPC, then absolute errors summed across UPCs — matching Aera\'s '
+        f'"Accuracy UPC Code" tab and the Power BI Mape. UPC measure. Error ABS UPC '
+        f'counts only materials carrying a UPC, as that measure does; roughly 15% '
+        f'of rows have none in the Aera master, so their volume shows but their '
+        f'error does not. Section 3.2 opens each line down to UPC and material code.',
         ST['body']))
     story.append(sp(4))
 
     if monthly_stats:
         chart_buf = _accuracy_chart(monthly_stats)
-        chart_h   = W * 3.2 / 6.5   # updated aspect ratio for taller chart
+        # Trimmed from 3.2 so the widened 3.1 table below still lands on this page
+        chart_h   = W * 2.7 / 6.5
         story.append(Image(chart_buf, width=W, height=chart_h))
         story.append(sp(8))
 
@@ -799,6 +866,18 @@ def build_prework_pdf(
                 f'3.1  Last Month Top 10 By Volume — {acc_last} 2026  '
                 f'(IBP n-3 vs Actual Sales, by Sub-Brand / Size)',
                 ST['sub']))
+            _n3m, _n3y = _n_plus(3)
+            story.append(Paragraph(
+                f'The first eight columns replicate the Power BI view; the last three '
+                f'are reference, not accuracy. <b>{acc_last} 25 Act</b> is the same '
+                f'month a year earlier. <b>{_n3m} {str(_n3y)[2:]} AdjFC n+3</b> is the '
+                f'plan standing three months out from the live cycle — the month this '
+                f'review can still change — and <b>{_n3m} {str(_n3y - 1)[2:]} Act</b> '
+                f'is what that month delivered last year, to judge it against. n+3 '
+                f'advances with the calendar: next cycle it reads '
+                f'{_n_plus(4)[0]} {_n_plus(4)[1]}.',
+                ST['source']))
+            story.append(sp(3))
             fc_c  = f"Fcst3M_{acc_last}_2026"
             act_c = f"Actual_{acc_last}_2026"
 
@@ -817,23 +896,27 @@ def build_prework_pdf(
                 acc_w = acc[_keep].copy()
                 acc_w[[fc_c, act_c]] = acc_w[[fc_c, act_c]].fillna(0)
                 # Re-key retired packs onto their successor so the changeover is
-                # one line instead of two mirror-image errors.
-                _chained = acc_w["Material_Number"].isin(SKU_SUCCESSORS)
-                if _chained.any():
-                    _succ = acc_w.loc[_chained, "Material_Number"].map(SKU_SUCCESSORS)
-                    _attr = (acc_w[~_chained]
-                             .drop_duplicates("Material_Number")
-                             .set_index("Material_Number")[["Sub_Brand_Description",
-                                                            "Volume",
-                                                            "Material_Long_Description"]])
-                    # Take the successor's sub-brand/size, but NOT its UPC — the
-                    # new codes have none, while the retiring ones do, and the
-                    # UPC is what the error measure keys on.
-                    for col in ["Sub_Brand_Description", "Volume",
-                                "Material_Long_Description"]:
-                        _new = _succ.map(_attr[col])
-                        acc_w.loc[_chained, col] = _new.fillna(acc_w.loc[_chained, col])
-                    acc_w.loc[_chained, "Material_Number"] = _succ
+                # one line instead of two mirror-image errors. The successor's
+                # sub-brand/size carries over but NOT its UPC — the new codes
+                # have none, the retiring ones do, and the UPC is what the error
+                # measure keys on.
+                acc_w = _chain(acc_w, ["Sub_Brand_Description", "Volume",
+                                       "Material_Long_Description"])
+
+                # Prior-year sales and the n+3 plan come from order history, not
+                # from the lag table, so they are prepared alongside and grained
+                # with the same maps further down.
+                sply_c   = f"Actual_{acc_last}_2025"
+                n3_m, n3_y = _n_plus(3)
+                n3_c     = f"AdjFC_{n3_m}_{n3_y}"
+                n3_sply  = f"Actual_{n3_m}_{n3_y - 1}"
+                extra_cols = [c for c in (sply_c, n3_c, n3_sply) if c in ca.columns]
+                hist = None
+                if extra_cols:
+                    hist = ca[["Material_Number", "Sub_Brand_Description", "Volume"]
+                              + extra_cols].copy()
+                    hist[extra_cols] = hist[extra_cols].fillna(0)
+                    hist = _chain(hist, ["Sub_Brand_Description", "Volume"])
 
                 # UPC is a property of the material, not of the customer row, but
                 # it is blank on some rows of a material and populated on others.
@@ -848,28 +931,22 @@ def build_prework_pdf(
                 # Canonicalise BEFORE building the UPC key: ~15% of rows carry
                 # no UPC (Aera's own master has "Not Set" for them), so they fall
                 # back to sub-brand — which must already be the canonical spelling
-                # or the same product splits into several UPC groups.
-                _cmap0 = _canon_subbrand_map(acc_w["Sub_Brand_Description"])
-                acc_w["Sub_Brand_Description"] = (acc_w["Sub_Brand_Description"]
-                                                  .map(_cmap0)
-                                                  .fillna(acc_w["Sub_Brand_Description"]))
-                acc_w["_k"]    = _upc_key(acc_w)
-                acc_w["_size"] = acc_w["Volume"].apply(_fmt_size)
-                # One sub-brand/size per MATERIAL, taken as the modal value.
-                # A minority of rows carry an alternate spelling ("JOSE CUERVO
+                # or the same product splits into several UPC groups. One
+                # sub-brand/size per MATERIAL, taken as the modal value, because a
+                # minority of rows carry an alternate spelling ("JOSE CUERVO
                 # SPARKLING MARGARITA" vs "JC Sparkling Margari") or size format
                 # (0.3300 vs 0.33); grouping row-by-row would split one product
                 # across several table rows and understate each. 22 materials in
                 # Australia IMC alone are affected.
-                modal = (acc_w.groupby(["Material_Number", "Sub_Brand_Description", "_size"])
-                              .size().reset_index(name="_n")
-                              .sort_values(["Material_Number", "_n"], ascending=[True, False])
-                              .drop_duplicates("Material_Number")
-                              [["Material_Number", "Sub_Brand_Description", "_size"]])
-                acc_w = (acc_w.drop(columns=["Sub_Brand_Description", "_size"])
-                              .merge(modal, on="Material_Number", how="left"))
-                acc_w["_grain"] = (acc_w["Sub_Brand_Description"].astype(str)
-                                   + acc_w["_size"].apply(lambda s: f" / {s}" if s else ""))
+                _cmap0 = _canon_subbrand_map(acc_w["Sub_Brand_Description"])
+                acc_w["Sub_Brand_Description"] = (acc_w["Sub_Brand_Description"]
+                                                  .map(_cmap0)
+                                                  .fillna(acc_w["Sub_Brand_Description"]))
+                acc_w["_k"] = _upc_key(acc_w)
+                if hist is not None:
+                    acc_w, hist = _attach_grain([acc_w, hist])
+                else:
+                    acc_w, = _attach_grain([acc_w])
                 # Volume columns cover every row. Error ABS UPC covers only
                 # materials that actually carry a UPC — the Power BI measure
                 # iterates over UPC, so a material whose UPC is "Not Set" in the
@@ -893,6 +970,14 @@ def build_prework_pdf(
                 # BIAS is undefined with no plan; PBI shows 100% there
                 rows_df["Bias_v"]  = rows_df.apply(
                     lambda r: 100.0 if r["IBP"] == 0 else r["FcstErr"] / r["IBP"] * 100, axis=1)
+                # Prior-year sales and the n+3 plan, summed on the same grain.
+                # Order history covers materials the lag table does not, so these
+                # are joined onto the grain rather than carried through acc_w.
+                if hist is not None:
+                    rows_df = rows_df.merge(
+                        hist.groupby("_grain", as_index=False)[extra_cols].sum(),
+                        on="_grain", how="left")
+                    rows_df[extra_cols] = rows_df[extra_cols].fillna(0)
                 top10 = rows_df.nlargest(10, "Actuals")
 
                 tot_ibp  = top10["IBP"].sum()
@@ -903,26 +988,42 @@ def build_prework_pdf(
                 tot_mape = tot_err / tot_act * 100 if tot_act > 0 else 0
                 tot_bias = tot_fe / tot_ibp * 100 if tot_ibp > 0 else 100.0
 
+                # The PBI replica, then the three forward/backward reference
+                # columns: last year's same month, the n+3 plan, and the month
+                # n+3 will be compared against a year from now.
                 acc_hdrs = ['Sub Brand / Size', 'IBP', 'Actual Sales', 'Forecast Error',
                             'Error ABS UPC', '% VOL', 'Mape. UPC', 'BIAS']
-                acc_rows = []
-                for _, r in top10.iterrows():
-                    acc_rows.append([
-                        r["_grain"],
-                        _fmt(r["IBP"]),
-                        _fmt(r["Actuals"]),
-                        _fmt(r["FcstErr"]),
-                        f"{r['Error']:,.2f}",
-                        f"{r['PctVol']:.2f}%",
-                        f"{r['MAPE_v']:.2f}%",
-                        f"{r['Bias_v']:.2f}%",
-                    ])
-                acc_rows.append(['TOTAL', _fmt(tot_ibp), _fmt(tot_act), _fmt(tot_fe),
-                                 f"{tot_err:,.2f}", f"{tot_pct:.2f}%",
-                                 f"{tot_mape:.2f}%", f"{tot_bias:.2f}%"])
-                story += dtbl(acc_hdrs, acc_rows,
-                               [4.6*cm, 1.9*cm, 2.1*cm, 2.2*cm,
-                                2.2*cm, 1.6*cm, 1.9*cm, 1.7*cm])
+                acc_cw   = [4.6*cm, 1.9*cm, 2.1*cm, 2.2*cm, 2.2*cm, 1.6*cm, 1.9*cm, 1.7*cm]
+                if extra_cols:
+                    _y2 = str(n3_y)[2:]
+                    acc_hdrs = (['Sub Brand / Size', 'IBP', 'Actual Sales', 'Fcst Error',
+                                 'Error ABS UPC', '% VOL', 'Mape. UPC', 'BIAS']
+                                + [{sply_c:  f'{acc_last} 25 Act',
+                                    n3_c:    f'{n3_m} {_y2} AdjFC n+3',
+                                    n3_sply: f'{n3_m} {int(_y2) - 1} Act'}[c]
+                                   for c in extra_cols])
+                    acc_cw   = ([4.4*cm, 1.2*cm, 1.3*cm, 1.3*cm, 1.5*cm,
+                                 1.1*cm, 1.55*cm, 1.45*cm]
+                                + [1.25*cm, 1.25*cm, 1.2*cm][:len(extra_cols)])
+
+                def _acc_row(label, ibp, act, fe, err, pct, mape, bias, extras):
+                    return ([label, _fmt(ibp), _fmt(act), _fmt(fe), f"{err:,.2f}",
+                             f"{pct:.2f}%", f"{mape:.2f}%", f"{bias:.2f}%"]
+                            + [_fmt(v) for v in extras])
+
+                acc_rows = [
+                    _acc_row(r["_grain"], r["IBP"], r["Actuals"], r["FcstErr"],
+                             r["Error"], r["PctVol"], r["MAPE_v"], r["Bias_v"],
+                             [r[c] for c in extra_cols])
+                    for _, r in top10.iterrows()
+                ]
+                acc_rows.append(
+                    _acc_row('TOTAL', tot_ibp, tot_act, tot_fe, tot_err,
+                             tot_pct, tot_mape, tot_bias,
+                             [top10[c].sum() for c in extra_cols]))
+                story += dtbl(acc_hdrs, acc_rows, acc_cw,
+                              font_size=7 if extra_cols else 8.5,
+                              pad=3 if extra_cols else 5)
 
                 if gpt_client:
                     worst = top10.nlargest(1, "MAPE_v")
