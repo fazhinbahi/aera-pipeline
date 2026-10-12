@@ -62,8 +62,14 @@ def _shift(month_str: str, delta: int) -> str:
 
 LAG1_PAIRS = [(_shift(m, -1), m) for m in FORECAST_MONTHS]
 LAG3_PAIRS = [(_shift(m, -3), m) for m in FORECAST_MONTHS]
-# Snapshot 4 months prior = the "n-3" convention used by the Becle Power BI
-# accuracy report (verified: matches PBI within ~0.1-1.6% at pack level)
+# Snapshot 4 months prior. This is NOT the general "n-3": that is LAG3_PAIRS,
+# the snapshot 3 months before the target (June forecasting September), settled
+# against the China APAC IMC Power BI in Sep 2026. Australia APAC IMC is the one
+# market whose PBI matches -4, so that market reads Fcst4M and every other reads
+# Fcst3M — see LAG_BY_MARKET in chatbot/prework_queries.py.
+# An earlier version of this comment claimed -4 was the convention everywhere,
+# and that is how a one-month error reached published pre-work. Changing a lag
+# convention means re-running validate_lags.py, not editing a comment.
 LAG4_PAIRS = [(_shift(m, -4), m) for m in FORECAST_MONTHS]
 
 # ── Corrupted source snapshots ────────────────────────────────────────────────
@@ -126,7 +132,12 @@ def _post(token, jsessionid, payload, lb="", retries=8):
 # ── Fetch one Lag-1 pair ──────────────────────────────────────────────────────
 
 def fetch_lag_pair(snapshot_month, forecast_month, token, jsessionid, lb):
-    """Returns df with Country_Name, Material_Number, Adjusted_FC aggregated."""
+    """One snapshot's view of one month, per customer x material x country.
+
+    The customer grain matters: lag1_data is keyed on it, so a coarser return
+    here would repeat each forecast across a customer's rows and inflate every
+    total downstream.
+    """
     print(f"  Fetching Lag-1 {forecast_month} (snapshot={snapshot_month})...", end=" ", flush=True)
     t0 = time.time()
 
@@ -170,7 +181,8 @@ def fetch_lag_pair(snapshot_month, forecast_month, token, jsessionid, lb):
     agg = df.groupby(["Material_Number", "Country_Name", "Customer_Number"], as_index=False)["Adjusted_FC"].sum()
     agg = agg[agg["Adjusted_FC"] != 0]
 
-    print(f"{total:,} rows → {len(agg):,} mat×country combos ({time.time()-t0:.0f}s)")
+    print(f"{total:,} rows → {len(agg):,} customer×material×country grains "
+          f"({time.time()-t0:.0f}s)")
     return agg
 
 
