@@ -41,6 +41,24 @@ INK, INK_MUTED = "#0b0b0b", "#52514e"
 # ── Data ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner="Loading lag data…")
 def load() -> tuple[pd.DataFrame, list[int], list[str]]:
+    """customer_analysis is the spine; lag1_data supplies only the forecasts.
+
+    Two reasons it is built this way rather than the other way round:
+
+    Actuals. lag1_data's Actual_* columns are MAX(invoiced, booked SO) per row —
+    a "best actual" built for the lag table — which runs 4-8% above the booked
+    sales orders Aera shows. Taking actuals from customer_analysis makes the
+    denominator reconcile to the Aera screen exactly.
+
+    Sub-segment. 191 Material x Country x Customer combinations sit in more than
+    one sub-segment, so a single ANY_VALUE pick silently moves volume between
+    them. customer_analysis already carries the sub-segment, and the lag forecast
+    is split across them in proportion to each one's actuals (evenly where the
+    triple has no actuals to weight on).
+
+    lag1_data rows with no customer_analysis match are dropped, costing 0.01-0.15%
+    of forecast volume — the price of anchoring to what Aera reports.
+    """
     client = _client()
     cols = {f.name for f in client.get_table(f"{GCP_PROJECT}.{DATASET}.lag1_data").schema}
 
@@ -50,39 +68,45 @@ def load() -> tuple[pd.DataFrame, list[int], list[str]]:
     if not lags or not months:
         return pd.DataFrame(), [], []
 
-    sel = []
-    for mth in months:
-        sel.append(f"l.Actual_{mth}_2026")
-        for lg in lags:
-            if f"Fcst{lg}M_{mth}_2026" in cols:
-                sel.append(f"l.Fcst{lg}M_{mth}_2026")
+    act_sel = ", ".join(f"SUM(COALESCE(Actual_{m}_2026,0)) AS act_{m}" for m in months)
+    tot_act = " + ".join(f"COALESCE(Actual_{m}_2026,0)" for m in months)
+    fc_sel  = ", ".join(f"COALESCE(l.Fcst{lg}M_{m}_2026,0) * w.wt AS f{lg}_{m}"
+                        for lg in lags for m in months
+                        if f"Fcst{lg}M_{m}_2026" in cols)
 
-    # Attributes join on Material + Customer only. lag1_data carries its own
-    # Country_Name straight from Aera, while customer_analysis currently has a
-    # large block of rows keyed to Country = 'Not Set', so joining on country
-    # would silently drop them.
     q = f"""
-        WITH attr AS (
-            SELECT Material_Number, Customer_Number,
-                   ANY_VALUE(Sub_Segments)            AS Sub_Segments,
-                   ANY_VALUE(Customer_Name)           AS Customer_Name,
-                   ANY_VALUE(Brand_Family)            AS Brand_Family,
-                   ANY_VALUE(Sub_Brand_Description)   AS Sub_Brand,
-                   ANY_VALUE(UPC_Code)                AS UPC_Code
+        WITH ca AS (
+            SELECT Material_Number, Country_Name, Customer_Number, Sub_Segments,
+                   ANY_VALUE(Customer_Name)         AS Customer_Name,
+                   ANY_VALUE(Brand_Family)          AS Brand_Family,
+                   ANY_VALUE(Sub_Brand_Description) AS Sub_Brand,
+                   ANY_VALUE(UPC_Code)              AS UPC_Code,
+                   SUM({tot_act})                   AS seg_actual,
+                   {act_sel}
             FROM `{GCP_PROJECT}.{DATASET}.customer_analysis`
-            GROUP BY 1, 2
+            GROUP BY 1, 2, 3, 4
+        ),
+        tri AS (
+            SELECT Material_Number, Country_Name, Customer_Number,
+                   SUM(seg_actual) AS tri_actual, COUNT(*) AS n_seg
+            FROM ca GROUP BY 1, 2, 3
+        ),
+        w AS (
+            SELECT ca.*,
+                   CASE WHEN tri.tri_actual > 0 THEN ca.seg_actual / tri.tri_actual
+                        ELSE 1.0 / tri.n_seg END AS wt
+            FROM ca JOIN tri USING (Material_Number, Country_Name, Customer_Number)
         )
-        SELECT l.Material_Number, l.Country_Name, l.Customer_Number,
-               a.Sub_Segments, a.Customer_Name, a.Brand_Family, a.Sub_Brand, a.UPC_Code,
-               {', '.join(sel)}
-        FROM `{GCP_PROJECT}.{DATASET}.lag1_data` l
-        LEFT JOIN attr a
-          ON l.Material_Number = a.Material_Number
-         AND l.Customer_Number = a.Customer_Number
+        SELECT w.Material_Number, w.Country_Name, w.Customer_Number, w.Sub_Segments,
+               w.Customer_Name, w.Brand_Family, w.Sub_Brand, w.UPC_Code,
+               {', '.join(f'w.act_{m}' for m in months)}, {fc_sel}
+        FROM w
+        LEFT JOIN `{GCP_PROJECT}.{DATASET}.lag1_data` l
+          USING (Material_Number, Country_Name, Customer_Number)
     """
     df = client.query(q).to_dataframe()
     for c in df.columns:
-        if c.startswith(("Fcst", "Actual")):
+        if re.match(r"^(f\d+_|act_)", c):
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     for c in ["Sub_Segments", "Customer_Name", "Brand_Family", "Sub_Brand", "UPC_Code"]:
         df[c] = df[c].fillna("").astype(str).str.strip()
@@ -91,7 +115,7 @@ def load() -> tuple[pd.DataFrame, list[int], list[str]]:
 
 def metrics(df: pd.DataFrame, lag: int, month: str, netted: bool) -> dict | None:
     """wMAPE and Bias for one lag-month, optionally netting inside each UPC."""
-    fc, ac = f"Fcst{lag}M_{month}_2026", f"Actual_{month}_2026"
+    fc, ac = f"f{lag}_{month}", f"act_{month}"
     if fc not in df.columns or ac not in df.columns:
         return None
     actual = df[ac].sum()
@@ -122,7 +146,9 @@ if df.empty:
 st.caption(
     f"**n-k = the Adjusted Forecast as it stood k months before the month it forecast.** "
     f"n-3 for September is the June 2026 snapshot. Compared against booked sales orders "
-    f"for the same month. 2026, {AVAIL[0]}–{AVAIL[-1]}. Volume in 9L cases."
+    f"for the same month. 2026, {AVAIL[0]}–{AVAIL[-1]}. Volume in 9L cases. "
+    f"Actuals are the booked sales orders Aera reports, so totals tie to the "
+    f"Forecast Adjustments screen."
 )
 
 missing = [l for l in range(1, 7) if l not in LAGS]
