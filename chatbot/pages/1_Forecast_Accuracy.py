@@ -21,6 +21,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from prework_queries import GCP_PROJECT, DATASET, _client
+from prework_pdf import _canon_subbrand_map, _fmt_size, _chain
 
 st.set_page_config(page_title="Forecast Accuracy by Lag", page_icon="📈", layout="wide")
 
@@ -80,6 +81,7 @@ def load() -> tuple[pd.DataFrame, list[int], list[str]]:
                    ANY_VALUE(Customer_Name)         AS Customer_Name,
                    ANY_VALUE(Brand_Family)          AS Brand_Family,
                    ANY_VALUE(Sub_Brand_Description) AS Sub_Brand,
+                   ANY_VALUE(Volume)                AS Size_Raw,
                    ANY_VALUE(UPC_Code)              AS UPC_Code,
                    SUM({tot_act})                   AS seg_actual,
                    {act_sel}
@@ -98,7 +100,7 @@ def load() -> tuple[pd.DataFrame, list[int], list[str]]:
             FROM ca JOIN tri USING (Material_Number, Country_Name, Customer_Number)
         )
         SELECT w.Material_Number, w.Country_Name, w.Customer_Number, w.Sub_Segments,
-               w.Customer_Name, w.Brand_Family, w.Sub_Brand, w.UPC_Code,
+               w.Customer_Name, w.Brand_Family, w.Sub_Brand, w.Size_Raw, w.UPC_Code,
                {', '.join(f'w.act_{m}' for m in months)}, {fc_sel}
         FROM w
         LEFT JOIN `{GCP_PROJECT}.{DATASET}.lag1_data` l
@@ -108,8 +110,33 @@ def load() -> tuple[pd.DataFrame, list[int], list[str]]:
     for c in df.columns:
         if re.match(r"^(f\d+_|act_)", c):
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-    for c in ["Sub_Segments", "Customer_Name", "Brand_Family", "Sub_Brand", "UPC_Code"]:
+    for c in ["Sub_Segments", "Customer_Name", "Brand_Family", "Sub_Brand",
+              "Size_Raw", "UPC_Code"]:
         df[c] = df[c].fillna("").astype(str).str.strip()
+
+    # Re-key retired packs onto their successor, as the pre-work does. Aera will
+    # not chain across pack sizes, so a changeover otherwise books twice: forecast
+    # on the dead code with no sales, sales on the new code with no forecast.
+    df = _chain(df, ["Sub_Brand", "Size_Raw"])
+
+    # UPC is a property of the material but is blank on some of its rows and set
+    # on others, so fill each material from whichever row carries one. Without
+    # this a chained pack keeps its predecessor's UPC on some rows and none on
+    # others, and the two halves stop netting against each other.
+    _u = df["UPC_Code"]
+    _first = (df.assign(_u=_u)[lambda x: x["_u"] != ""]
+                .drop_duplicates("Material_Number")
+                .set_index("Material_Number")["_u"])
+    df["UPC_Code"] = _u.where(_u != "", df["Material_Number"].map(_first)).fillna("")
+
+    # Sub-brand/size is the grain the business reviews, but the master spells one
+    # product several ways ("JOSE CUERVO ESPECIAL SILVER" vs "JC Especial Silver")
+    # and writes size as both 0.33 and 0.3300. Left alone each product splits into
+    # several lines. Same canonicalisation the pre-work uses, so the two agree.
+    cmap = _canon_subbrand_map(df["Sub_Brand"])
+    sb   = df["Sub_Brand"].map(cmap).fillna(df["Sub_Brand"])
+    size = df["Size_Raw"].apply(_fmt_size)
+    df["Grain"] = sb.astype(str) + size.apply(lambda s: f" / {s}" if s else "")
     return df, lags, months
 
 
@@ -171,8 +198,11 @@ with st.sidebar:
     netted = st.toggle(
         "Net within UPC", value=False,
         help="On: customers and codes sharing a UPC offset before the absolute "
-             "error is taken (Power BI / Aera 'Accuracy UPC Code' convention). "
-             "Off: absolute error at customer × SKU row level.")
+             "error is taken (Aera 'Accuracy UPC Code' convention). Off: absolute "
+             "error at customer × SKU row level. Note materials with no UPC fall "
+             "back to their sub-brand here rather than being dropped, so this runs "
+             "above the pre-work's Error ABS UPC, which excludes them as Power BI "
+             "does.")
 
 d = df.copy()
 for col, sel in [("Sub_Segments", f_seg), ("Country_Name", f_ctry),
@@ -291,6 +321,86 @@ if show:
     rule = alt.Chart(t).mark_rule(color="#d8d7d3").encode(x=alt.X("month:N", sort=months)).add_params(sel).transform_filter(sel)
     st.altair_chart((rule + line).properties(height=320).configure_view(stroke=None),
                     use_container_width=True)
+
+st.divider()
+st.subheader("Top 10 sub-brands by volume")
+
+gc1, gc2 = st.columns([1, 2])
+with gc1:
+    g_lag = st.selectbox("Forecast horizon", LAGS, index=min(2, len(LAGS) - 1),
+                         format_func=lambda l: f"n-{l}",
+                         help="Which lag to treat as IBP for this table.")
+with gc2:
+    g_month = st.selectbox("Month", ["All selected months"] + months, index=0)
+
+g_months = months if g_month == "All selected months" else [g_month]
+gfc = [f"f{g_lag}_{m}" for m in g_months if f"f{g_lag}_{m}" in d.columns]
+gac = [f"act_{m}" for m in g_months]
+
+if gfc:
+    g = d.assign(IBP=d[gfc].sum(axis=1), Actual=d[gac].sum(axis=1))
+    # Error ABS nets customers and codes inside each UPC first, the convention
+    # of Aera's "Accuracy UPC Code" tab, when the netting toggle is on.
+    if netted:
+        key = g["UPC_Code"].where(g["UPC_Code"] != "", "SB:" + g["Sub_Brand"])
+        per = g.assign(_k=key).groupby(["Grain", "_k"], as_index=False)[["IBP", "Actual"]].sum()
+        per["AbsErr"] = (per.IBP - per.Actual).abs()
+        err = per.groupby("Grain", as_index=False)["AbsErr"].sum()
+    else:
+        err = (g.assign(AbsErr=(g.IBP - g.Actual).abs())
+                .groupby("Grain", as_index=False)["AbsErr"].sum())
+    tot = g.groupby("Grain", as_index=False)[["IBP", "Actual"]].sum().merge(err, on="Grain")
+    market = tot.Actual.sum()
+    tot = tot[tot.Actual > 0].copy()
+    tot["FcstErr"] = tot.Actual - tot.IBP
+    tot["PctVol"]  = tot.Actual / market * 100 if market else 0
+    tot["MAPE"]    = tot.AbsErr / tot.Actual * 100
+    tot["Bias"]    = tot.apply(lambda r: 100.0 if r.IBP == 0
+                               else (r.Actual - r.IBP) / r.IBP * 100, axis=1)
+    top = tot.nlargest(10, "Actual").reset_index(drop=True)
+
+    if top.empty:
+        st.info("No sub-brand volume in this scope.")
+    else:
+        order = list(top.Grain)
+        st.caption(f"IBP at **n-{g_lag}** vs booked sales orders"
+                   f"{'' if g_month == 'All selected months' else f' · {g_month} 2026'}"
+                   f" · 9L cases. Sub-brand / size, the grain the pre-work reports.")
+        melted = top.melt(id_vars="Grain", value_vars=["IBP", "Actual"],
+                          var_name="Series", value_name="Volume")
+        st.altair_chart(
+            alt.Chart(melted).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+               .encode(
+                 y=alt.Y("Grain:N", sort=order, title=None,
+                         axis=alt.Axis(labelLimit=260, labelColor=INK, domain=False, ticks=False)),
+                 x=alt.X("Volume:Q", title="9L cases",
+                         axis=alt.Axis(gridColor="#eceae6", domain=False, ticks=False,
+                                       labelColor=INK_MUTED)),
+                 yOffset=alt.YOffset("Series:N", sort=["IBP", "Actual"]),
+                 color=alt.Color("Series:N", sort=["IBP", "Actual"],
+                                 scale=alt.Scale(domain=["IBP", "Actual"],
+                                                 range=[CATEGORICAL[0], CATEGORICAL[1]]),
+                                 legend=alt.Legend(title=None, orient="top")),
+                 tooltip=[alt.Tooltip("Grain:N", title="Sub-brand / size"),
+                          alt.Tooltip("Series:N", title=""),
+                          alt.Tooltip("Volume:Q", title="9LC", format=",.0f")])
+               .properties(height=34 * len(top) + 40).configure_view(stroke=None),
+            use_container_width=True)
+
+        show = top[["Grain", "IBP", "Actual", "FcstErr", "AbsErr", "PctVol", "MAPE", "Bias"]]
+        show.columns = ["Sub Brand / Size", "IBP", "Actual Sales", "Fcst Error",
+                        "Error ABS", "% VOL", "MAPE", "BIAS"]
+        st.dataframe(
+            show.style.format({"IBP": "{:,.0f}", "Actual Sales": "{:,.0f}",
+                               "Fcst Error": "{:+,.0f}", "Error ABS": "{:,.2f}",
+                               "% VOL": "{:.2f}%", "MAPE": "{:.2f}%", "BIAS": "{:+.2f}%"}),
+            use_container_width=True, hide_index=True)
+        t_ibp, t_act, t_err = top.IBP.sum(), top.Actual.sum(), top.AbsErr.sum()
+        st.caption(
+            f"**Top-10 total** — IBP {t_ibp:,.0f} · Actual {t_act:,.0f} · "
+            f"Error {t_act - t_ibp:+,.0f} · MAPE {t_err / t_act * 100:.2f}% · "
+            f"BIAS {(t_act - t_ibp) / t_ibp * 100 if t_ibp else 0:+.2f}% · "
+            f"{t_act / market * 100:.1f}% of the scope's volume")
 
 st.divider()
 st.subheader("Data")
