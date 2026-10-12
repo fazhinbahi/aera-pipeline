@@ -387,20 +387,33 @@ if gfc:
                .properties(height=34 * len(top) + 40).configure_view(stroke=None),
             use_container_width=True)
 
-        show = top[["Grain", "IBP", "Actual", "FcstErr", "AbsErr", "PctVol", "MAPE", "Bias"]]
+        cols = ["Grain", "IBP", "Actual", "FcstErr", "AbsErr", "PctVol", "MAPE", "Bias"]
+        t_ibp, t_act, t_err = top.IBP.sum(), top.Actual.sum(), top.AbsErr.sum()
+        # MAPE and BIAS re-derive from the summed volumes rather than averaging the
+        # rows above, the same weighting the pre-work's total line uses.
+        total = pd.DataFrame([{
+            "Grain": "Total (top 10)", "IBP": t_ibp, "Actual": t_act,
+            "FcstErr": t_act - t_ibp, "AbsErr": t_err,
+            "PctVol": t_act / market * 100 if market else 0,
+            "MAPE": t_err / t_act * 100 if t_act else 0,
+            "Bias": (t_act - t_ibp) / t_ibp * 100 if t_ibp else 0,
+        }])
+        show = pd.concat([top[cols], total[cols]], ignore_index=True)
         show.columns = ["Sub Brand / Size", "IBP", "Actual Sales", "Fcst Error",
                         "Error ABS", "% VOL", "MAPE", "BIAS"]
+        last = len(show) - 1
         st.dataframe(
-            show.style.format({"IBP": "{:,.0f}", "Actual Sales": "{:,.0f}",
-                               "Fcst Error": "{:+,.0f}", "Error ABS": "{:,.2f}",
-                               "% VOL": "{:.2f}%", "MAPE": "{:.2f}%", "BIAS": "{:+.2f}%"}),
-            use_container_width=True, hide_index=True)
-        t_ibp, t_act, t_err = top.IBP.sum(), top.Actual.sum(), top.AbsErr.sum()
-        st.caption(
-            f"**Top-10 total** — IBP {t_ibp:,.0f} · Actual {t_act:,.0f} · "
-            f"Error {t_act - t_ibp:+,.0f} · MAPE {t_err / t_act * 100:.2f}% · "
-            f"BIAS {(t_act - t_ibp) / t_ibp * 100 if t_ibp else 0:+.2f}% · "
-            f"{t_act / market * 100:.1f}% of the scope's volume")
+            show.style
+                .format({"IBP": "{:,.0f}", "Actual Sales": "{:,.0f}",
+                         "Fcst Error": "{:+,.0f}", "Error ABS": "{:,.2f}",
+                         "% VOL": "{:.2f}%", "MAPE": "{:.2f}%", "BIAS": "{:+.2f}%"})
+                .apply(lambda r: ["background-color: #f1efec"] * len(r)
+                       if r.name == last else [""] * len(r), axis=1),
+            use_container_width=True, hide_index=True,
+            height=35 * (len(show) + 1) + 3)   # or the 11th row falls behind a scrollbar
+        st.caption(f"The total line is these ten grains only — "
+                   f"{t_act / market * 100:.1f}% of the scope's volume. "
+                   f"MAPE and BIAS on it are volume-weighted, not row averages.")
 
 st.divider()
 st.subheader("Data")
