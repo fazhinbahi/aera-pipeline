@@ -48,14 +48,20 @@ def _client() -> bigquery.Client:
             info, scopes=["https://www.googleapis.com/auth/bigquery"]
         )
         return bigquery.Client(project=GCP_PROJECT, credentials=creds)
-    # Local dev fallback: gcloud CLI
-    try:
-        token = subprocess.check_output(
-            ["gcloud", "auth", "print-access-token", f"--account={GCLOUD_ACC}"],
-            stderr=subprocess.DEVNULL,
-        ).decode().strip()
-    except subprocess.CalledProcessError:
-        raise SystemExit("✗ Set GCP_SA_JSON env var, or run: gcloud auth login")
+    # Local dev fallback: gcloud CLI (absolute-path fallback for launchd's bare PATH)
+    token = None
+    for gcloud in ("gcloud", "/usr/local/share/google-cloud-sdk/bin/gcloud"):
+        try:
+            token = subprocess.check_output(
+                [gcloud, "auth", "print-access-token", f"--account={GCLOUD_ACC}"],
+                stderr=subprocess.DEVNULL,
+            ).decode().strip()
+            break
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    if not token:
+        raise SystemExit("✗ gcloud not found/authed. Set GCP_SA_JSON env var, "
+                         "or run: gcloud auth login")
     creds = credentials.Credentials(token=token)
     return bigquery.Client(project=GCP_PROJECT, credentials=creds)
 
@@ -181,14 +187,16 @@ def _customer_analysis_rename_map() -> dict:
 
 
 def _lag1_rename_map() -> dict:
-    """Rename Lag1_/Lag3_ to Fcst1M_/Fcst3M_ so meaning is self-evident."""
+    """Carry pre-2026-10 parquets over to the Fcst{k}M_ naming.
+
+    build_lag1_table now writes Fcst{k}M_{Mon}_{YYYY} directly and covers lags
+    1-6 across a rolling 13-month window, so this matches nothing on a current
+    parquet. It stays only so an older artifact still loads correctly; the years
+    are the ones that naming ever applied to.
+    """
     months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    rename: dict = {}
-    for m in months:
-        rename[f"Lag1_{m}_2026"] = f"Fcst1M_{m}_2026"
-        rename[f"Lag3_{m}_2026"] = f"Fcst3M_{m}_2026"
-        rename[f"Lag4_{m}_2026"] = f"Fcst4M_{m}_2026"   # PBI "n-3" convention
-    return rename
+    return {f"Lag{lag}_{m}_{yr}": f"Fcst{lag}M_{m}_{yr}"
+            for yr in ("2025", "2026") for m in months for lag in (1, 3, 4)}
 
 
 def _stat3pd_rename_map() -> dict:

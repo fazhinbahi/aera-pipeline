@@ -10,6 +10,7 @@ import os
 import sys
 import time
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -41,16 +42,15 @@ MEA = "E3524740-47C7-4C30-A381-333FC13DEBD6|SUM|||||"  # Adjusted FC only
 
 PAGE_LIMIT = 2000
 
-# Lag pairs are computed dynamically so this file never needs manual updates.
-_ALL_2026 = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 _TODAY    = datetime.date.today()
 _CUR_START = _TODAY.replace(day=1)
 
-# Closed = every 2026 month that has fully completed before today
-FORECAST_MONTHS = [
-    f"{m} 2026" for m in _ALL_2026
-    if datetime.datetime.strptime(f"{m} 2026", "%b %Y").date() < _CUR_START
-]
+# A rolling window, so September can be read against September a year earlier and
+# so the file never needs editing at a year boundary. 13 months, not 12: the
+# window has to include both ends of the year-on-year comparison.
+WINDOW_MONTHS = 13
+LAGS = [1, 2, 3, 4, 5, 6]
+
 
 def _shift(month_str: str, delta: int) -> str:
     """Return the month string `delta` months earlier (negative) or later."""
@@ -60,50 +60,69 @@ def _shift(month_str: str, delta: int) -> str:
     while m > 12: m -= 12; y += 1
     return datetime.date(y, m, 1).strftime("%b %Y")
 
-LAG1_PAIRS = [(_shift(m, -1), m) for m in FORECAST_MONTHS]
-LAG3_PAIRS = [(_shift(m, -3), m) for m in FORECAST_MONTHS]
-# Snapshot 4 months prior. This is NOT the general "n-3": that is LAG3_PAIRS,
-# the snapshot 3 months before the target (June forecasting September), settled
-# against the China APAC IMC Power BI in Sep 2026. Australia APAC IMC is the one
-# market whose PBI matches -4, so that market reads Fcst4M and every other reads
-# Fcst3M — see LAG_BY_MARKET in chatbot/prework_queries.py.
-# An earlier version of this comment claimed -4 was the convention everywhere,
-# and that is how a one-month error reached published pre-work. Changing a lag
-# convention means re-running validate_lags.py, not editing a comment.
-LAG4_PAIRS = [(_shift(m, -4), m) for m in FORECAST_MONTHS]
+
+def _closed_months(n=WINDOW_MONTHS):
+    """The n most recently completed months, oldest first."""
+    last = _shift(_CUR_START.strftime("%b %Y"), -1)      # last fully closed month
+    return [_shift(last, -(n - 1 - i)) for i in range(n)]
+
+
+FORECAST_MONTHS = _closed_months()
+
+def col_for(lag, month):
+    return f"Fcst{lag}M_{month.replace(' ', '_')}"
+
+# Lags 1-6 across the window. A snapshot is frozen once taken, so a pair already
+# in the parquet is not re-fetched — see REFRESH_TARGETS for the exception.
+WANTED_PAIRS = [(lag, _shift(m, -lag), m) for m in FORECAST_MONTHS for lag in LAGS]
+
+# The one thing that does still move: Aera keeps adding grains to recent
+# snapshots after we first read them (measured drift +0.29% at n-2 over a day),
+# so the most recently closed month is re-fetched in full every run.
+REFRESH_TARGETS = set(FORECAST_MONTHS[-1:])
 
 # ── Corrupted source snapshots ────────────────────────────────────────────────
 # Aera's snapshot dimension returns each grain EXACTLY TWICE for some snapshot
 # months, and the BIO sums them before we see the rows (one row per grain, value
-# doubled). Confirmed 23 Sep and still present 5 Oct 2026. Evidence: holding one
-# target month fixed, every other snapshot sits in a tight band while these read
-# ~2x, and the per-grain ratio against clean neighbours has median exactly 2.00.
-# Raised with Aera; halve while it persists.
-SUSPECT_SNAPSHOTS = ["May 2026", "Jun 2026"]
-CALIBRATION_TARGET = "Aug 2026"   # a closed month every snapshot here forecasts
+# doubled). Confirmed 23 Sep and still present 5 Oct 2026 for May and Jun 2026.
+# Evidence: holding one target month fixed, every other snapshot sits in a tight
+# band while these read ~2x, and the per-grain ratio against clean neighbours has
+# median exactly 2.00. Raised with Aera; correct while it persists.
+#
+# Detection is per target month rather than against a hardcoded list of suspects,
+# because the window now reaches back into 2025, where no snapshot has ever been
+# checked. Each target is forecast by six snapshots; a doubled one stands out
+# against the median of the others and needs no extra fetch. This also means the
+# correction disappears by itself the day Aera fixes the feed.
+DOUBLE_LO, DOUBLE_HI = 1.6, 2.4
+MAX_DOUBLED_PER_TARGET = 2   # beyond this the median is no longer a clean ruler
 
 
-def detect_doubled(token, jsessionid, lb, clean_ref="Apr 2026"):
-    """Confirm at runtime which suspect snapshots are still doubled.
+def correct_doubling(df, month, fresh_cols):
+    """Halve any snapshot of `month` that reads ~2x the others forecasting it.
 
-    Never trust the hardcoded list blindly: if Aera fixes the feed, applying the
-    correction anyway would halve good data. Compare each suspect against a
-    known-clean snapshot for the same target and only correct on a clear ~2x.
+    `fresh_cols` are the columns fetched this run. Columns already in the
+    parquet were corrected when they were written, so they serve as the clean
+    ruler here and must never be corrected twice.
     """
-    base = fetch_lag_pair(clean_ref, CALIBRATION_TARGET, token, jsessionid, lb)
-    base_total = base["Adjusted_FC"].sum()
-    doubled = []
-    for snap in SUSPECT_SNAPSHOTS:
-        if snap not in [s for s, _ in LAG1_PAIRS + LAG3_PAIRS + LAG4_PAIRS]:
-            continue
-        t = fetch_lag_pair(snap, CALIBRATION_TARGET, token, jsessionid, lb)["Adjusted_FC"].sum()
-        ratio = t / base_total if base_total else 0
-        if 1.6 <= ratio <= 2.4:
-            doubled.append(snap)
-            print(f"    ⚠ {snap} snapshot reads {ratio:.2f}x clean — halving its values")
-        else:
-            print(f"    ✓ {snap} snapshot reads {ratio:.2f}x clean — no correction")
-    return set(doubled)
+    present = [col_for(l, month) for l in LAGS if col_for(l, month) in df.columns]
+    totals = {c: df[c].sum() for c in present}
+    ruler = [v for c, v in totals.items() if v > 0]
+    if len(ruler) < 3:
+        return df, []                      # too few snapshots to judge against
+    med = float(np.median(ruler))
+    hits = [c for c in fresh_cols
+            if totals.get(c, 0) > 0 and DOUBLE_LO <= totals[c] / med <= DOUBLE_HI]
+    if len(hits) > MAX_DOUBLED_PER_TARGET:
+        print(f"    ⚠ {month}: {len(hits)} of {len(present)} snapshots read ~2x — "
+              f"that is too many for the median to be trusted. NOT correcting; "
+              f"check the feed by hand.")
+        return df, []
+    for c in hits:
+        print(f"    ⚠ {month}: {c} reads {totals[c] / med:.2f}x the median of the "
+              f"other snapshots — halving")
+        df[c] = df[c] / 2.0
+    return df, hits
 
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
@@ -269,54 +288,61 @@ def main():
 
     KEY = ["Material_Number", "Country_Name", "Customer_Number"]
 
-    print("\nCalibrating snapshot feed for the known duplication defect...")
-    DOUBLED = detect_doubled(token, jsessionid, lb)
+    # ── What is already on disk ───────────────────────────────────────────────
+    # Snapshots are frozen once taken, so re-fetching all 78 pairs every day
+    # would be 25 minutes spent re-reading immutable numbers. Keep what we have
+    # and fetch only what is missing.
+    prior_path = os.path.join(DIR, "lag1_vs_actuals.parquet")
+    prior = pd.read_parquet(prior_path) if os.path.exists(prior_path) else None
+    if prior is not None:
+        for k in KEY:
+            prior[k] = prior[k].astype(str)
+        print(f"Existing parquet: {len(prior):,} rows, "
+              f"{sum(c.startswith('Fcst') for c in prior.columns)} forecast columns")
 
-    def _fix(df, snapshot, col):
-        """Halve a snapshot confirmed to be double-counted at source."""
-        if snapshot in DOUBLED:
-            df[col] = df[col] / 2.0
-        return df
+    have = set(prior.columns) if prior is not None else set()
+    todo = [(lag, snap, tgt) for lag, snap, tgt in WANTED_PAIRS
+            if col_for(lag, tgt) not in have or tgt in REFRESH_TARGETS]
+    print(f"\nWindow {FORECAST_MONTHS[0]} – {FORECAST_MONTHS[-1]} "
+          f"({len(FORECAST_MONTHS)} months x {len(LAGS)} lags = {len(WANTED_PAIRS)} pairs)")
+    print(f"To fetch: {len(todo)}  ({len(WANTED_PAIRS) - len(todo)} already held)\n")
 
-    # ── Fetch all 5 Lag-1 pairs ───────────────────────────────────────────────
-    print(f"Fetching Lag-1 forecasts ({len(LAG1_PAIRS)} months: {FORECAST_MONTHS[0]}–{FORECAST_MONTHS[-1]})...")
-    lag1_frames = []
-    for snapshot, forecast in LAG1_PAIRS:
-        df = fetch_lag_pair(snapshot, forecast, token, jsessionid, lb)
-        _c = f"Lag1_{forecast.replace(' ', '_')}"
-        df = _fix(df.rename(columns={"Adjusted_FC": _c}), snapshot, _c)
-        lag1_frames.append(df)
+    # ── Fetch ─────────────────────────────────────────────────────────────────
+    fetched, t_tok = {}, time.time()
+    for i, (lag, snapshot, target) in enumerate(todo, 1):
+        if time.time() - t_tok > 1800:        # token lives ~45 min
+            tok = ensure_token(min_seconds=300)
+            token, jsessionid, lb = (tok["access_token"], tok.get("jsessionid", ""),
+                                     tok.get("lb_instance_id", ""))
+            t_tok = time.time()
+        col = col_for(lag, target)
+        print(f"[{i}/{len(todo)}] n-{lag}  {target}  (snapshot {snapshot})", flush=True)
+        df = fetch_lag_pair(snapshot, target, token, jsessionid, lb)
+        fetched[col] = df.rename(columns={"Adjusted_FC": col})
 
-    # ── Fetch all Lag-3 pairs ─────────────────────────────────────────────────
-    print("\nFetching Lag-3 forecasts...")
-    lag3_frames = []
-    for snapshot, forecast in LAG3_PAIRS:
-        df = fetch_lag_pair(snapshot, forecast, token, jsessionid, lb)
-        _c = f"Lag3_{forecast.replace(' ', '_')}"
-        df = _fix(df.rename(columns={"Adjusted_FC": _c}), snapshot, _c)
-        lag3_frames.append(df)
-
-    # ── Fetch all Lag-4 pairs (PBI n-3 convention) ────────────────────────────
-    print("\nFetching Lag-4 forecasts (PBI n-3)...")
-    lag4_frames = []
-    for snapshot, forecast in LAG4_PAIRS:
-        df = fetch_lag_pair(snapshot, forecast, token, jsessionid, lb)
-        _c = f"Lag4_{forecast.replace(' ', '_')}"
-        df = _fix(df.rename(columns={"Adjusted_FC": _c}), snapshot, _c)
-        lag4_frames.append(df)
-
-    # ── Merge all lag frames ──────────────────────────────────────────────────
+    # ── Merge, starting from what we already had ──────────────────────────────
     print("\nMerging lag frames...")
-    lag_wide = lag1_frames[0]
-    for frame in lag1_frames[1:] + lag3_frames + lag4_frames:
-        lag_wide = lag_wide.merge(frame, on=KEY, how="outer")
+    lag_wide = prior.drop(columns=[c for c in prior.columns
+                                   if c.startswith("Actual_")], errors="ignore") \
+        if prior is not None else None
+    if lag_wide is not None:
+        lag_wide = lag_wide.drop(columns=list(fetched), errors="ignore")
+    for col, frame in fetched.items():
+        for k in KEY:
+            frame[k] = frame[k].astype(str)
+        lag_wide = frame if lag_wide is None else lag_wide.merge(frame, on=KEY, how="outer")
 
-    lag1_col_names = [f"Lag1_{m.replace(' ', '_')}" for m in FORECAST_MONTHS]
-    lag3_col_names = [f"Lag3_{m.replace(' ', '_')}" for m in FORECAST_MONTHS]
-    lag4_col_names = [f"Lag4_{m.replace(' ', '_')}" for m in FORECAST_MONTHS]
-    lag_col_names  = lag1_col_names + lag3_col_names + lag4_col_names
+    lag_col_names = [col_for(l, m) for m in FORECAST_MONTHS for l in LAGS
+                     if col_for(l, m) in lag_wide.columns]
     for c in lag_col_names:
         lag_wide[c] = lag_wide[c].fillna(0)
+
+    # ── Correct the source duplication, per target month ──────────────────────
+    print("\nChecking each target month's snapshots for the duplication defect...")
+    for m in FORECAST_MONTHS:
+        fresh = [c for c in fetched if c in {col_for(l, m) for l in LAGS}]
+        if fresh:
+            lag_wide, _ = correct_doubling(lag_wide, m, fresh)
 
     # ── Load actuals ──────────────────────────────────────────────────────────
     print("Loading actuals from adjfc parquet...")
@@ -338,7 +364,7 @@ def main():
     # Sort
     result = result.sort_values(["Country_Name", "Customer_Number", "Material_Number"]).reset_index(drop=True)
 
-    col_order = ["Material_Number", "Country_Name", "Customer_Number"] + lag1_col_names + lag3_col_names + lag4_col_names + actual_col_names
+    col_order = ["Material_Number", "Country_Name", "Customer_Number"] + lag_col_names + actual_col_names
     result = result[col_order]
 
     # ── Save ──────────────────────────────────────────────────────────────────
@@ -394,11 +420,16 @@ def main():
 
     elapsed = (time.time() - t_start) / 60
     print(f"\n✓ Done in {elapsed:.1f} min")
-    print(f"  Rows: {len(result):,}  |  Mat×Country combos")
+    print(f"  Rows: {len(result):,} at customer×material×country")
     print(f"  Saved → {out_xlsx}")
-    print(f"\nSummary totals:")
-    for c in lag1_col_names + lag3_col_names + lag4_col_names + actual_col_names:
-        print(f"  {c}: {result[c].sum():>12,.1f}")
+    print("\nTotals by target month (9LC):")
+    print(f"  {'month':10s}" + "".join(f"{'n-'+str(l):>12s}" for l in LAGS) + f"{'actual':>12s}")
+    for m in FORECAST_MONTHS:
+        cells = "".join(
+            f"{result[col_for(l, m)].sum():>12,.0f}" if col_for(l, m) in result else f"{'-':>12s}"
+            for l in LAGS)
+        a = f"Actual_{m.replace(' ', '_')}"
+        print(f"  {m:10s}{cells}" + (f"{result[a].sum():>12,.0f}" if a in result else f"{'-':>12s}"))
 
 
 if __name__ == "__main__":

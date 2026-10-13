@@ -1,9 +1,12 @@
 """
-Forecast Accuracy by Lag — n-1 … n-6 vs booked sales orders, 2026 to date.
+Forecast Accuracy by Lag — n-1 … n-6 vs booked sales orders, rolling 13 months.
 
 "n-k" is the Adjusted Forecast as it stood k calendar months before the month it
 was forecasting: n-3 for September is the June snapshot. Comparing the lags side
 by side shows how accuracy decays with horizon, which a single-lag view cannot.
+
+The window is the last 13 closed months rather than the calendar year, so every
+month can be read against the same month a year earlier.
 
 Metrics follow the pre-work definitions:
     wMAPE = SUM|Fcst - Actual| / SUM(Actual)
@@ -27,6 +30,22 @@ st.set_page_config(page_title="Forecast Accuracy by Lag", page_icon="📈", layo
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _key(mon: str, year: int) -> str:
+    """Column suffix for a month, e.g. Sep 2025 -> 'Sep_2025'."""
+    return f"{mon}_{year}"
+
+
+def _label(period: str) -> str:
+    """Axis label for a period: 'Sep_2025' -> 'Sep 25'."""
+    mon, year = period.split("_")
+    return f"{mon} {year[2:]}"
+
+
+def _order(period: str) -> tuple[int, int]:
+    mon, year = period.split("_")
+    return int(year), MONTHS.index(mon)
 
 # Lag is ORDINAL, so one hue light->dark rather than categorical hues. A six-step
 # single-hue ramp cannot hold visible gaps between every adjacent pair, so the
@@ -63,17 +82,23 @@ def load() -> tuple[pd.DataFrame, list[int], list[str]]:
     client = _client()
     cols = {f.name for f in client.get_table(f"{GCP_PROJECT}.{DATASET}.lag1_data").schema}
 
-    lags = sorted({int(m.group(1)) for c in cols
-                   if (m := re.match(r"Fcst(\d+)M_", c))})
-    months = [m for m in MONTHS if f"Actual_{m}_2026" in cols]
+    # Periods come from whatever lag1_data holds, so the window rolls forward on
+    # its own: the builder keeps the last 13 closed months, and a month only
+    # appears here once customer_analysis can supply its actuals too.
+    ca_cols = {f.name for f in
+               client.get_table(f"{GCP_PROJECT}.{DATASET}.customer_analysis").schema}
+    pat   = re.compile(r"Fcst(\d+)M_([A-Za-z]{3})_(\d{4})$")
+    pairs = {(int(m.group(1)), _key(m.group(2), int(m.group(3))))
+             for c in cols if (m := pat.match(c))}
+    lags    = sorted({lg for lg, _ in pairs})
+    months  = sorted({p for _, p in pairs if f"Actual_{p}" in ca_cols}, key=_order)
     if not lags or not months:
         return pd.DataFrame(), [], []
 
-    act_sel = ", ".join(f"SUM(COALESCE(Actual_{m}_2026,0)) AS act_{m}" for m in months)
-    tot_act = " + ".join(f"COALESCE(Actual_{m}_2026,0)" for m in months)
-    fc_sel  = ", ".join(f"COALESCE(l.Fcst{lg}M_{m}_2026,0) * w.wt AS f{lg}_{m}"
-                        for lg in lags for m in months
-                        if f"Fcst{lg}M_{m}_2026" in cols)
+    act_sel = ", ".join(f"SUM(COALESCE(Actual_{p},0)) AS act_{p}" for p in months)
+    tot_act = " + ".join(f"COALESCE(Actual_{p},0)" for p in months)
+    fc_sel  = ", ".join(f"COALESCE(l.Fcst{lg}M_{p},0) * w.wt AS f{lg}_{p}"
+                        for lg in lags for p in months if (lg, p) in pairs)
 
     q = f"""
         WITH ca AS (
@@ -172,9 +197,10 @@ if df.empty:
 
 st.caption(
     f"**n-k = the Adjusted Forecast as it stood k months before the month it forecast.** "
-    f"n-3 for September is the June 2026 snapshot. Compared against booked sales orders "
-    f"for the same month. 2026, {AVAIL[0]}–{AVAIL[-1]}. Volume in 9L cases. "
-    f"Actuals are the booked sales orders Aera reports, so totals tie to the "
+    f"n-3 for September 2026 is the June 2026 snapshot. Compared against booked sales "
+    f"orders for the same month. Rolling 13 months, {_label(AVAIL[0])}–{_label(AVAIL[-1])}, "
+    f"so each month can be read against the same month a year earlier. Volume in 9L "
+    f"cases. Actuals are the booked sales orders Aera reports, so totals tie to the "
     f"Forecast Adjustments screen."
 )
 
@@ -194,7 +220,7 @@ with st.sidebar:
     f_cust = pick("Customer", "Customer_Name")
     f_brand= pick("Brand family", "Brand_Family")
     st.divider()
-    months = st.multiselect("Months", AVAIL, default=AVAIL)
+    months = st.multiselect("Months", AVAIL, default=AVAIL, format_func=_label)
     netted = st.toggle(
         "Net within UPC", value=False,
         help="On: customers and codes sharing a UPC offset before the absolute "
@@ -218,6 +244,10 @@ rows = [m for lg in LAGS for mth in months if (m := metrics(d, lg, mth, netted))
 if not rows:
     st.warning("No actuals in the selected scope."); st.stop()
 res = pd.DataFrame(rows)
+# Charts key on the period ("Sep_2025") but must read as "Sep 25", and must sort
+# chronologically across the year boundary rather than alphabetically.
+MLAB = [_label(m) for m in months]
+res["mlabel"] = res.month.map(_label)
 
 # Totals per lag: re-weight across months rather than averaging the percentages
 by_lag = (res.groupby(["lag", "lag_n"], as_index=False)
@@ -285,14 +315,14 @@ st.subheader("wMAPE by month and lag")
 st.caption("Each cell is one month forecast at one horizon. Darker = less accurate.")
 st.altair_chart(
     alt.Chart(res).mark_rect(stroke="#fcfcfb", strokeWidth=2).encode(
-        x=alt.X("month:N", sort=months, title=None,
+        x=alt.X("mlabel:N", sort=MLAB, title=None,
                 axis=alt.Axis(labelAngle=0, labelColor=INK, domain=False, ticks=False)),
         y=alt.Y("lag:N", sort=[f"n-{l}" for l in LAGS], title=None,
                 axis=alt.Axis(labelColor=INK, domain=False, ticks=False)),
         color=alt.Color("wMAPE:Q", title="wMAPE %",
                         scale=alt.Scale(range=SEQ_BLUE),
                         legend=alt.Legend(gradientLength=180)),
-        tooltip=[alt.Tooltip("month:N", title="Month"), alt.Tooltip("lag:N", title="Lag"),
+        tooltip=[alt.Tooltip("mlabel:N", title="Month"), alt.Tooltip("lag:N", title="Lag"),
                  alt.Tooltip("wMAPE:Q", title="wMAPE", format=".1f"),
                  alt.Tooltip("Bias:Q", title="Bias", format="+.1f"),
                  alt.Tooltip("Forecast:Q", title="Forecast", format=",.0f"),
@@ -300,25 +330,25 @@ st.altair_chart(
     ).properties(height=40 * len(LAGS) + 40).configure_view(stroke=None),
     use_container_width=True)
 
-st.subheader("Trend over the year")
+st.subheader("Trend across the 13 months")
 show = st.multiselect("Lags to plot", [f"n-{l}" for l in LAGS],
                       default=[f"n-{l}" for l in LAGS][:3],
                       help="Up to 4 reads cleanly; beyond that use the heatmap above.")
 if show:
     t = res[res.lag.isin(show)]
-    sel = alt.selection_point(fields=["month"], nearest=True, on="mouseover", empty=False)
+    sel = alt.selection_point(fields=["mlabel"], nearest=True, on="mouseover", empty=False)
     line = alt.Chart(t).mark_line(strokeWidth=2, point=alt.OverlayMarkDef(size=60, filled=True)).encode(
-        x=alt.X("month:N", sort=months, title=None,
+        x=alt.X("mlabel:N", sort=MLAB, title=None,
                 axis=alt.Axis(labelAngle=0, labelColor=INK, domainColor="#d8d7d3", ticks=False)),
         y=alt.Y("wMAPE:Q", title="wMAPE %",
                 axis=alt.Axis(gridColor="#eceae6", domain=False, ticks=False, labelColor=INK_MUTED)),
         color=alt.Color("lag:N", sort=show,
                         scale=alt.Scale(domain=show, range=CATEGORICAL[:len(show)]),
                         legend=alt.Legend(title=None, orient="top")),
-        tooltip=[alt.Tooltip("month:N", title="Month"), alt.Tooltip("lag:N", title="Lag"),
+        tooltip=[alt.Tooltip("mlabel:N", title="Month"), alt.Tooltip("lag:N", title="Lag"),
                  alt.Tooltip("wMAPE:Q", title="wMAPE", format=".1f"),
                  alt.Tooltip("Bias:Q", title="Bias", format="+.1f")])
-    rule = alt.Chart(t).mark_rule(color="#d8d7d3").encode(x=alt.X("month:N", sort=months)).add_params(sel).transform_filter(sel)
+    rule = alt.Chart(t).mark_rule(color="#d8d7d3").encode(x=alt.X("mlabel:N", sort=MLAB)).add_params(sel).transform_filter(sel)
     st.altair_chart((rule + line).properties(height=320).configure_view(stroke=None),
                     use_container_width=True)
 
@@ -331,7 +361,8 @@ with gc1:
                          format_func=lambda l: f"n-{l}",
                          help="Which lag to treat as IBP for this table.")
 with gc2:
-    g_month = st.selectbox("Month", ["All selected months"] + months, index=0)
+    g_month = st.selectbox("Month", ["All selected months"] + months, index=0,
+                           format_func=lambda m: m if m.startswith("All") else _label(m))
 
 g_months = months if g_month == "All selected months" else [g_month]
 gfc = [f"f{g_lag}_{m}" for m in g_months if f"f{g_lag}_{m}" in d.columns]
@@ -364,7 +395,7 @@ if gfc:
     else:
         order = list(top.Grain)
         st.caption(f"IBP at **n-{g_lag}** vs booked sales orders"
-                   f"{'' if g_month == 'All selected months' else f' · {g_month} 2026'}"
+                   f"{'' if g_month == 'All selected months' else f' · {_label(g_month)}'}"
                    f" · 9L cases. Sub-brand / size, the grain the pre-work reports.")
         melted = top.melt(id_vars="Grain", value_vars=["IBP", "Actual"],
                           var_name="Series", value_name="Volume")
@@ -430,4 +461,4 @@ with tab2:
                  use_container_width=True)
 st.download_button("⬇ Download as CSV",
                    res.to_csv(index=False).encode(),
-                   f"forecast_accuracy_by_lag_2026.csv", "text/csv")
+                   f"forecast_accuracy_by_lag.csv", "text/csv")

@@ -44,7 +44,10 @@ import prework_queries as Q
 
 P, D   = Q.GCP_PROJECT, Q.DATASET
 TABLE  = f"{P}.{D}.lag1_data"
-TARGET = "Sep 2026"
+TARGET  = "Sep 2026"
+# Same month a year earlier: the window now reaches into 2025, where no snapshot
+# had ever been checked against Aera.
+TARGETS = ["Sep 2026", "Sep 2025"]
 LAGS   = [1, 2, 3, 4, 5, 6]
 KEY    = ["Material_Number", "Country_Name", "Customer_Number"]
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep"]
@@ -90,30 +93,34 @@ def main():
     token, jsess, lb = (tok["access_token"], tok.get("jsessionid", ""),
                         tok.get("lb_instance_id", ""))
     tgt = TARGET.replace(" ", "_")
-    bq = run(f"SELECT {', '.join(KEY)}, "
-             f"{', '.join(f'Fcst{k}M_{tgt}' for k in LAGS)} FROM `{TABLE}`")
-    for k in KEY:
-        bq[k] = bq[k].astype(str)
 
     # ── 1. mapping ───────────────────────────────────────────────────────────
-    hdr(f"1. MAPPING — each stored Fcst{{k}}M_{tgt} vs the snapshot it claims")
-    print(f"{'column':22s} {'snapshot':9s} {'Aera live':>12s} {'stored':>12s} "
-          f"{'ratio':>6s}  grains matching")
+    hdr("1. MAPPING — each stored column vs the snapshot it claims")
     live = {}
-    for k in LAGS:
-        snap, col = _shift(TARGET, -k), f"Fcst{k}M_{tgt}"
-        a = fetch_lag_pair(snap, TARGET, token, jsess, lb)
-        for c in KEY:
-            a[c] = a[c].astype(str)
-        live[k] = a
-        m = a.merge(bq[KEY + [col]], on=KEY, how="outer").fillna(0)
-        raw, got = m["Adjusted_FC"].sum(), m[col].sum()
-        at1 = np.isclose(m["Adjusted_FC"], m[col], rtol=1e-6, atol=0.01).sum()
-        at2 = np.isclose(m["Adjusted_FC"] / 2, m[col], rtol=1e-6, atol=0.01).sum()
-        # zero rows satisfy both tests, so the larger count is the real verdict
-        verdict = "1:1" if at1 >= at2 else "halved"
-        print(f"{col:22s} {snap:9s} {raw:>12,.0f} {got:>12,.0f} "
-              f"{raw / got if got else 0:>6.3f}  {max(at1, at2):,}/{len(m):,} {verdict}")
+    for target in TARGETS:
+        t = target.replace(" ", "_")
+        bq = run(f"SELECT {', '.join(KEY)}, "
+                 f"{', '.join(f'Fcst{k}M_{t}' for k in LAGS)} FROM `{TABLE}`")
+        for k in KEY:
+            bq[k] = bq[k].astype(str)
+        print(f"\n  target {target}")
+        print(f"  {'column':22s} {'snapshot':9s} {'Aera live':>12s} {'stored':>12s} "
+              f"{'ratio':>6s}  grains matching")
+        for k in LAGS:
+            snap, col = _shift(target, -k), f"Fcst{k}M_{t}"
+            a = fetch_lag_pair(snap, target, token, jsess, lb)
+            for c in KEY:
+                a[c] = a[c].astype(str)
+            if target == TARGET:
+                live[k] = a
+            m = a.merge(bq[KEY + [col]], on=KEY, how="outer").fillna(0)
+            raw, got = m["Adjusted_FC"].sum(), m[col].sum()
+            at1 = np.isclose(m["Adjusted_FC"], m[col], rtol=1e-6, atol=0.01).sum()
+            at2 = np.isclose(m["Adjusted_FC"] / 2, m[col], rtol=1e-6, atol=0.01).sum()
+            # zero rows satisfy both tests, so the larger count is the real verdict
+            verdict = "1:1" if at1 >= at2 else "halved"
+            print(f"  {col:22s} {snap:9s} {raw:>12,.0f} {got:>12,.0f} "
+                  f"{raw / got if got else 0:>6.3f}  {max(at1, at2):,}/{len(m):,} {verdict}")
 
     # ── 2. doubling ──────────────────────────────────────────────────────────
     hdr("2. DOUBLING — is every grain inflated, or only some?")
@@ -141,13 +148,15 @@ def main():
     hdr("3. ANCHOR — do the corrected snapshots bracket actuals?")
     print("The strongest evidence the halving fixes rather than breaks: a corrected")
     print("snapshot should land in the same band as the five others and near actuals.\n")
-    print(run(f"""
-        SELECT 'actual {TARGET}' AS k, ROUND(SUM(Actual_{tgt}),0) AS v, '' AS note
-        FROM `{P}.{D}.customer_analysis`
-        {''.join(f"UNION ALL SELECT 'n-{k} ({_shift(TARGET,-k)})', ROUND(SUM(Fcst{k}M_{tgt}),0), "
-                 f"'{'halved' if _shift(TARGET,-k) in ('May 2026','Jun 2026') else ''}' "
-                 f"FROM `{TABLE}` " for k in LAGS)}
-    """).to_string(index=False))
+    for target in TARGETS:
+        t = target.replace(" ", "_")
+        print(run(f"""
+            SELECT 'actual {target}' AS k, ROUND(SUM(Actual_{t}),0) AS v
+            FROM `{P}.{D}.customer_analysis`
+            {''.join(f"UNION ALL SELECT 'n-{k} ({_shift(target,-k)})', "
+                     f"ROUND(SUM(Fcst{k}M_{t}),0) FROM `{TABLE}` " for k in LAGS)}
+        """).to_string(index=False))
+        print()
 
     # ── 4. join grain and weighting ──────────────────────────────────────────
     hdr("4. GRAIN & WEIGHTING — no duplication, no leakage")
