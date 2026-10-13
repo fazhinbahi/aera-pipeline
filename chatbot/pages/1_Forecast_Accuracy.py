@@ -445,6 +445,11 @@ if gfc:
         if len(tot) > len(top):
             foot.append(_summary(f"Scope total ({len(tot)} grains)", tot))
         show = pd.concat([top[cols], pd.DataFrame(foot)[cols]], ignore_index=True)
+        # MAPE becomes text here rather than staying a number with gaps in it.
+        # Streamlit draws its own placeholder for an empty numeric cell and prints
+        # the word None, ignoring the formatter — which reads as a broken table
+        # rather than as "this grain had no sales to divide by".
+        show["MAPE"] = show["MAPE"].map(lambda v: "—" if pd.isna(v) else f"{v:.2f}%")
         show.columns = ["Sub Brand / Size", "IBP", "Actual Sales", "Fcst Error",
                         "Error ABS", "% VOL", "MAPE", "BIAS"]
         feet = set(range(len(show) - len(foot), len(show)))
@@ -452,10 +457,7 @@ if gfc:
             show.style
                 .format({"IBP": "{:,.0f}", "Actual Sales": "{:,.0f}",
                          "Fcst Error": "{:+,.0f}", "Error ABS": "{:,.2f}",
-                         "% VOL": "{:.2f}%", "BIAS": "{:+.2f}%",
-                         # an em dash, not a blank: "no sales to divide by" is a
-                         # statement, where an empty cell reads as missing data
-                         "MAPE": lambda v: "—" if pd.isna(v) else f"{v:.2f}%"})
+                         "% VOL": "{:.2f}%", "BIAS": "{:+.2f}%"})
                 .apply(lambda r: ["background-color: #f1efec"] * len(r)
                        if r.name in feet else [""] * len(r), axis=1),
             use_container_width=True, hide_index=True,
