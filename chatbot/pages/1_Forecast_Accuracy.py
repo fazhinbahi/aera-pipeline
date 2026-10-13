@@ -353,7 +353,7 @@ if show:
                     use_container_width=True)
 
 st.divider()
-st.subheader("Top 10 sub-brands by volume")
+st.subheader("Top 10 sub-brands")
 
 gc1, gc2 = st.columns([1, 2])
 with gc1:
@@ -382,13 +382,22 @@ if gfc:
                 .groupby("Grain", as_index=False)["AbsErr"].sum())
     tot = g.groupby("Grain", as_index=False)[["IBP", "Actual"]].sum().merge(err, on="Grain")
     market = tot.Actual.sum()
-    tot = tot[tot.Actual > 0].copy()
+    # A grain that was forecast but sold nothing is the single biggest source of
+    # error there is, and it has to appear. Ranking on sales alone would bury it
+    # for ever and filtering on sales > 0 removed it outright: for Japan APAC
+    # DEVELOP at n-3 that hid 13 of 14 grains carrying 74% of the forecast, so
+    # the table showed 31% MAPE where the lag chart above it showed 222%.
+    tot = tot[(tot.Actual != 0) | (tot.IBP != 0)].copy()
     tot["FcstErr"] = tot.Actual - tot.IBP
     tot["PctVol"]  = tot.Actual / market * 100 if market else 0
-    tot["MAPE"]    = tot.AbsErr / tot.Actual * 100
+    # MAPE divides by actuals, so it is undefined with no sales — the row still
+    # carries its error into the totals, where the denominator is the scope's.
+    tot["MAPE"]    = tot.apply(lambda r: float("nan") if r.Actual == 0
+                               else r.AbsErr / r.Actual * 100, axis=1)
     tot["Bias"]    = tot.apply(lambda r: 100.0 if r.IBP == 0
                                else (r.Actual - r.IBP) / r.IBP * 100, axis=1)
-    top = tot.nlargest(10, "Actual").reset_index(drop=True)
+    tot["Size"]    = tot[["IBP", "Actual"]].abs().max(axis=1)
+    top = tot.nlargest(10, "Size").reset_index(drop=True)
 
     if top.empty:
         st.info("No sub-brand volume in this scope.")
@@ -419,32 +428,44 @@ if gfc:
             use_container_width=True)
 
         cols = ["Grain", "IBP", "Actual", "FcstErr", "AbsErr", "PctVol", "MAPE", "Bias"]
-        t_ibp, t_act, t_err = top.IBP.sum(), top.Actual.sum(), top.AbsErr.sum()
-        # MAPE and BIAS re-derive from the summed volumes rather than averaging the
-        # rows above, the same weighting the pre-work's total line uses.
-        total = pd.DataFrame([{
-            "Grain": "Total (top 10)", "IBP": t_ibp, "Actual": t_act,
-            "FcstErr": t_act - t_ibp, "AbsErr": t_err,
-            "PctVol": t_act / market * 100 if market else 0,
-            "MAPE": t_err / t_act * 100 if t_act else 0,
-            "Bias": (t_act - t_ibp) / t_ibp * 100 if t_ibp else 0,
-        }])
-        show = pd.concat([top[cols], total[cols]], ignore_index=True)
+
+        def _summary(label, frame):
+            """Totals re-derived from summed volumes, the pre-work's weighting."""
+            i, a, e = frame.IBP.sum(), frame.Actual.sum(), frame.AbsErr.sum()
+            return {"Grain": label, "IBP": i, "Actual": a, "FcstErr": a - i,
+                    "AbsErr": e, "PctVol": a / market * 100 if market else 0,
+                    "MAPE": e / a * 100 if a else float("nan"),
+                    "Bias": (a - i) / i * 100 if i else 100.0}
+
+        # Two totals, because the ten rows above are rarely the whole story. The
+        # scope line is every grain in the filter, so it reconciles with the lag
+        # charts at the top of the page — which is the check that caught the
+        # zero-sales grains going missing.
+        foot = [_summary(f"Total (top {len(top)})", top)]
+        if len(tot) > len(top):
+            foot.append(_summary(f"Scope total ({len(tot)} grains)", tot))
+        show = pd.concat([top[cols], pd.DataFrame(foot)[cols]], ignore_index=True)
         show.columns = ["Sub Brand / Size", "IBP", "Actual Sales", "Fcst Error",
                         "Error ABS", "% VOL", "MAPE", "BIAS"]
-        last = len(show) - 1
+        feet = set(range(len(show) - len(foot), len(show)))
         st.dataframe(
             show.style
                 .format({"IBP": "{:,.0f}", "Actual Sales": "{:,.0f}",
                          "Fcst Error": "{:+,.0f}", "Error ABS": "{:,.2f}",
-                         "% VOL": "{:.2f}%", "MAPE": "{:.2f}%", "BIAS": "{:+.2f}%"})
+                         "% VOL": "{:.2f}%", "MAPE": "{:.2f}%", "BIAS": "{:+.2f}%"},
+                        na_rep="—")
                 .apply(lambda r: ["background-color: #f1efec"] * len(r)
-                       if r.name == last else [""] * len(r), axis=1),
+                       if r.name in feet else [""] * len(r), axis=1),
             use_container_width=True, hide_index=True,
-            height=35 * (len(show) + 1) + 3)   # or the 11th row falls behind a scrollbar
-        st.caption(f"The total line is these ten grains only — "
-                   f"{t_act / market * 100:.1f}% of the scope's volume. "
-                   f"MAPE and BIAS on it are volume-weighted, not row averages.")
+            height=35 * (len(show) + 1) + 3)   # or the last row falls behind a scrollbar
+        nosale = tot[(tot.Actual == 0) & (tot.IBP != 0)]
+        note = (f" **{len(nosale)}** of them sold nothing at all yet carried "
+                f"**{nosale.IBP.sum():,.0f}** 9LC of forecast — "
+                f"{nosale.IBP.sum() / tot.IBP.sum() * 100:.0f}% of it. MAPE is blank on "
+                f"those rows because it divides by sales, but their error is in the "
+                f"totals." if len(nosale) else "")
+        st.caption(f"Ranked by the larger of forecast and sales, so a grain that was "
+                   f"planned but never sold still appears.{note}")
 
 st.divider()
 st.subheader("Data")
