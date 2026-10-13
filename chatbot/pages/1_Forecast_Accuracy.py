@@ -452,8 +452,10 @@ if gfc:
             show.style
                 .format({"IBP": "{:,.0f}", "Actual Sales": "{:,.0f}",
                          "Fcst Error": "{:+,.0f}", "Error ABS": "{:,.2f}",
-                         "% VOL": "{:.2f}%", "MAPE": "{:.2f}%", "BIAS": "{:+.2f}%"},
-                        na_rep="—")
+                         "% VOL": "{:.2f}%", "BIAS": "{:+.2f}%",
+                         # an em dash, not a blank: "no sales to divide by" is a
+                         # statement, where an empty cell reads as missing data
+                         "MAPE": lambda v: "—" if pd.isna(v) else f"{v:.2f}%"})
                 .apply(lambda r: ["background-color: #f1efec"] * len(r)
                        if r.name in feet else [""] * len(r), axis=1),
             use_container_width=True, hide_index=True,
