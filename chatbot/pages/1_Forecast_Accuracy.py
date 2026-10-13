@@ -220,7 +220,11 @@ with st.sidebar:
     f_cust = pick("Customer", "Customer_Name")
     f_brand= pick("Brand family", "Brand_Family")
     st.divider()
-    months = st.multiselect("Months", AVAIL, default=AVAIL, format_func=_label)
+    # Back into calendar order: a multiselect hands its values back in the order
+    # they were picked, so re-adding one chip puts that month first on every axis
+    # that sorts on this list.
+    months = sorted(st.multiselect("Months", AVAIL, default=AVAIL,
+                                   format_func=_label), key=_order)
     netted = st.toggle(
         "Net within UPC", value=False,
         help="On: customers and codes sharing a UPC offset before the absolute "
@@ -331,9 +335,14 @@ st.altair_chart(
     use_container_width=True)
 
 st.subheader("Trend across the 13 months")
-show = st.multiselect("Lags to plot", [f"n-{l}" for l in LAGS],
-                      default=[f"n-{l}" for l in LAGS][:3],
-                      help="Up to 4 reads cleanly; beyond that use the heatmap above.")
+show = sorted(st.multiselect("Lags to plot", [f"n-{l}" for l in LAGS],
+                             default=[f"n-{l}" for l in LAGS][:3],
+                             help="Up to 4 reads cleanly; beyond that use the heatmap above."),
+              key=lambda s: int(s.split("-")[1]))
+# Hue is pinned to the lag, not to its position in the selection, so n-3 stays
+# the same colour whichever other lags are on screen and in whatever order they
+# were picked. Otherwise dropping a lag repaints the ones that remain.
+HUE = {f"n-{l}": CATEGORICAL[i % len(CATEGORICAL)] for i, l in enumerate(LAGS)}
 if show:
     t = res[res.lag.isin(show)]
     sel = alt.selection_point(fields=["mlabel"], nearest=True, on="mouseover", empty=False)
@@ -343,7 +352,7 @@ if show:
         y=alt.Y("wMAPE:Q", title="wMAPE %",
                 axis=alt.Axis(gridColor="#eceae6", domain=False, ticks=False, labelColor=INK_MUTED)),
         color=alt.Color("lag:N", sort=show,
-                        scale=alt.Scale(domain=show, range=CATEGORICAL[:len(show)]),
+                        scale=alt.Scale(domain=show, range=[HUE[s] for s in show]),
                         legend=alt.Legend(title=None, orient="top")),
         tooltip=[alt.Tooltip("mlabel:N", title="Month"), alt.Tooltip("lag:N", title="Lag"),
                  alt.Tooltip("wMAPE:Q", title="wMAPE", format=".1f"),
