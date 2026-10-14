@@ -69,21 +69,54 @@ AREAS = {
             {"market": "Türkiye", "country": "Türkiye"},
         ],
     },
+    "slavko": {
+        "manager": "Slavko",
+        "sub_segment": "EMEA ENTERP",
+        # Order matters: the first rule a row matches names its market, so
+        # Russia is listed before Switzerland would otherwise claim LBSC.
+        "scope": [
+            # Russia is served through accounts that sit under other countries
+            # in Aera, so it is defined by customer rather than by country.
+            {"market": "Russia", "customers": ["%LBSC%"]},
+            {"market": "Portugal",    "country": "Portugal"},
+            {"market": "Belgium",     "country": "Belgium"},
+            {"market": "Austria",     "country": "Austria"},
+            {"market": "Serbia",      "country": "Serbia"},
+            {"market": "Hungary",     "country": "Hungary"},
+            {"market": "Romania",     "country": "Romania"},
+            {"market": "Croatia",     "country": "Croatia"},
+            {"market": "Slovenia",    "country": "Slovenia"},
+            {"market": "Switzerland", "country": "Switzerland", "include": "%LATELTIN%"},
+        ],
+    },
 }
 
 ACT_YEAR, FC_YEARS = 2025, (2026, 2027, 2028)
 
 
 def _rule_sql(r):
-    c = f"Country_Name = '{r['country']}'"
+    parts = []
+    if r.get("country"):
+        parts.append(f"Country_Name = '{r['country']}'")
     if r.get("include"):
-        c += f" AND UPPER(Customer_Name) LIKE '{r['include'].upper()}'"
+        parts.append(f"UPPER(Customer_Name) LIKE '{r['include'].upper()}'")
+    if r.get("customers"):
+        # A market can be a set of accounts rather than a country: Russia is
+        # served through customers that sit under other countries in Aera, so
+        # the rule matches on customer and the country is whatever it is.
+        ors = " OR ".join(f"UPPER(Customer_Name) LIKE '{c.upper()}'"
+                          for c in r["customers"])
+        parts.append(f"({ors})")
+    if r.get("numbers"):
+        ors = " OR ".join(f"Customer_Number = '{n}'" for n in r["numbers"])
+        parts.append(f"({ors})")
     if r.get("exclude"):
         # COALESCE so a customer with no name is kept rather than dropped by the
-        # NULL — UAE has one, and it carries volume.
-        c += (f" AND COALESCE(UPPER(Customer_Name),'') NOT LIKE "
-              f"'{r['exclude'].upper()}'")
-    return c
+        # NULL — UAE has two unnamed accounts and they carry volume.
+        parts.append(f"COALESCE(UPPER(Customer_Name),'') NOT LIKE '{r['exclude'].upper()}'")
+    if not parts:
+        raise ValueError(f"rule for {r['market']} matches everything")
+    return " AND ".join(parts)
 
 
 def _where(area):
@@ -451,10 +484,17 @@ def sheet_instructions(wb, area, df, live, notes):
 
     head("SCOPE — this is a patch, not a country list")
     for rule in area["scope"]:      # not r: that is this function's row counter
-        bits = [f"Aera country '{rule['country']}'"]
+        bits = ([f"Aera country '{rule['country']}'"] if rule.get("country")
+                else ["not a country — defined by the accounts below"])
         if rule.get("include"): bits.append(f"customer matching '{rule['include']}' only")
         if rule.get("exclude"): bits.append(f"every customer except '{rule['exclude']}'")
-        if not rule.get("include") and not rule.get("exclude"): bits.append("all customers")
+        if rule.get("customers"):
+            bits.append("customers matching " + ", ".join(f"'{c}'" for c in rule["customers"])
+                        + ", in whichever country Aera holds them")
+        if rule.get("numbers"):
+            bits.append("customer numbers " + ", ".join(rule["numbers"]))
+        if not any(rule.get(k) for k in ("include", "exclude", "customers", "numbers")):
+            bits.append("all customers")
         if rule.get("club"):    bits.append(f"reported as one line, '{rule['club']}'")
         line(rule["market"], ", ".join(bits))
     r += 1
