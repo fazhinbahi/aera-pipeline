@@ -213,13 +213,25 @@ def _sheet(wb, title, heading, blurb, headers, widths=None):
     return ws
 
 
-def _write(ws, r, vals, fill=None, bold=False, numfmt="#,##0.0"):
+VOL  = "#,##0.0"
+CNT  = "#,##0"                        # a count of SKUs is not a volume
+PCT  = "+#,##0.0%;-#,##0.0%"          # takes a FRACTION: 1.234 renders as +123.4%
+
+
+def _write(ws, r, vals, fill=None, bold=False, numfmt=VOL, fmts=None):
+    """fmts maps a 1-based column to its number format, overriding numfmt.
+
+    Percent columns must be handed a fraction, never a number already scaled to
+    100: Excel's percent format multiplies again, which is how +123.4% growth
+    first printed as +12,336.1%.
+    """
     for j, v in enumerate(vals, 1):
         c = ws.cell(row=r, column=j, value=v)
         c.border = THIN
         if fill: c.fill = fill
         if bold: c.font = BOLD
-        if isinstance(v, (int, float)): c.number_format = numfmt
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            c.number_format = (fmts or {}).get(j, numfmt)
     return r + 1
 
 
@@ -318,13 +330,11 @@ def sheet_summary(wb, df, live):
                               sub["TOT_2027"].sum(), sub["TOT_2028"].sum())
         p27 = sum(sub[f"FC_2027_{m}"].sum() for m in lf if f"FC_2027_{m}" in sub)
         p28 = sum(sub[f"FC_2028_{m}"].sum() for m in lf if f"FC_2028_{m}" in sub)
-        pct = lambda n, d: (n / d - 1) * 100 if d else None
+        pct = lambda n, d: (n / d - 1) if d else None        # fraction; PCT scales it
         vals = [market, cust, int(sub.Material_Number.nunique()), a25, t26, t27, t28,
                 pct(t26, a25), pct(t27, t26), p27, p28, pct(p28, p27)]
-        r = _write(ws, r, vals, fill=fill, bold=bold)
-        for col in (8, 9, 12):
-            c = ws.cell(row=r - 1, column=col)
-            if isinstance(c.value, (int, float)): c.number_format = "+#,##0.0%;-#,##0.0%"
+        r = _write(ws, r, vals, fill=fill, bold=bold,
+                   fmts={3: CNT, 8: PCT, 9: PCT, 12: PCT})
 
     for market in sorted(df.Market.unique()):
         dm = df[df.Market == market]
@@ -350,16 +360,14 @@ def sheet_top(wb, df):
     r = 5
     for i, x in g.iterrows():
         base, cur = x[f"TOT_{ACT_YEAR}"], x[f"TOT_{FC_YEARS[0]}"]
-        pc = (cur / base - 1) * 100 if base else None
-        if base == 0 and cur:       status = "NEW — no 2025 base"
-        elif cur == 0 and base:     status = "DISCONTINUED?"
-        elif pc is not None and pc >= 25:  status = "growing >25%"
-        elif pc is not None and pc <= -25: status = "declining >25%"
-        else:                       status = ""
+        pc = (cur / base - 1) if base else None              # fraction; PCT scales it
+        if base == 0 and cur:        status = "NEW — no 2025 base"
+        elif cur == 0 and base:      status = "DISCONTINUED?"
+        elif pc is not None and pc >= 0.25:  status = "growing >25%"
+        elif pc is not None and pc <= -0.25: status = "declining >25%"
+        else:                        status = ""
         r = _write(ws, r, [i + 1, x.Market, x.Category, x.Subbrand, x.Size_s,
-                           cur, base, x.d, pc, status])
-        c = ws.cell(row=r - 1, column=9)
-        if isinstance(c.value, (int, float)): c.number_format = "+#,##0.0%;-#,##0.0%"
+                           cur, base, x.d, pc, status], fmts={1: CNT, 9: PCT})
     return ws
 
 
