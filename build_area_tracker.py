@@ -74,10 +74,18 @@ AREAS = {
         "sub_segment": "EMEA ENTERP",
         # Order matters: the first rule a row matches names its market, so
         # Russia is listed before Switzerland would otherwise claim LBSC.
+        # Aera holds this account with no customer name at all, so the report
+        # would call it "(unnamed customer)". Naming it here is presentation
+        # only — the rule still selects on the number, which is what master data
+        # actually guarantees.
+        "names": {"0000420420": "Elspirits"},
         "scope": [
             # Russia is served through accounts that sit under other countries
             # in Aera, so it is defined by customer rather than by country.
-            {"market": "Russia", "customers": ["%LBSC%"]},
+            # Elspirits is in Aera with no customer name, so it is reached by
+            # number. Confirmed with the business 14 Oct 2026; give it a name in
+            # master data and the pattern below can replace the number.
+            {"market": "Russia", "customers": ["%LBSC%"], "numbers": ["0000420420"]},
             {"market": "Portugal",    "country": "Portugal"},
             {"market": "Belgium",     "country": "Belgium"},
             {"market": "Austria",     "country": "Austria"},
@@ -95,21 +103,22 @@ ACT_YEAR, FC_YEARS = 2025, (2026, 2027, 2028)
 
 
 def _rule_sql(r):
+    """country AND (any of the account selectors) AND NOT excluded.
+
+    The account selectors are OR'd, not AND'd: a market built from accounts can
+    name some by customer and others by number, and an account that is in Aera
+    without a name can only be reached by its number — Russia needs both.
+    """
     parts = []
     if r.get("country"):
         parts.append(f"Country_Name = '{r['country']}'")
-    if r.get("include"):
-        parts.append(f"UPPER(Customer_Name) LIKE '{r['include'].upper()}'")
-    if r.get("customers"):
-        # A market can be a set of accounts rather than a country: Russia is
-        # served through customers that sit under other countries in Aera, so
-        # the rule matches on customer and the country is whatever it is.
-        ors = " OR ".join(f"UPPER(Customer_Name) LIKE '{c.upper()}'"
-                          for c in r["customers"])
-        parts.append(f"({ors})")
-    if r.get("numbers"):
-        ors = " OR ".join(f"Customer_Number = '{n}'" for n in r["numbers"])
-        parts.append(f"({ors})")
+
+    acct = [f"UPPER(Customer_Name) LIKE '{c.upper()}'"
+            for c in ([r["include"]] if r.get("include") else []) + r.get("customers", [])]
+    acct += [f"Customer_Number = '{n}'" for n in r.get("numbers", [])]
+    if acct:
+        parts.append("(" + " OR ".join(acct) + ")")
+
     if r.get("exclude"):
         # COALESCE so a customer with no name is kept rather than dropped by the
         # NULL — UAE has two unnamed accounts and they carry volume.
@@ -152,9 +161,15 @@ def load(area):
 
     sel = ", ".join(f"ROUND(SUM(COALESCE({c},0)),4) AS `{k[0]}_{k[1]}_{k[2]}`"
                     for k, c in series.items())
+    # Name the accounts Aera holds without one, before grouping — a customer
+    # with several sales-org numbers must still collapse to one line, so this
+    # cannot be done afterwards from a Customer_Number column.
+    whens = " ".join(f"WHEN Customer_Number = '{n}' THEN '{lab}'"
+                     for n, lab in area.get("names", {}).items())
+    cust = f"CASE {whens} ELSE Customer_Name END" if whens else "Customer_Name"
     q = f"""
         SELECT {_market_case(area)} AS Market,
-               Customer_Name, Country_Name, Material_Number,
+               {cust} AS Customer_Name, Country_Name, Material_Number,
                ANY_VALUE(Material_Long_Description)      AS Description,
                ANY_VALUE(Category_Grouper_Description_Z) AS Category,
                ANY_VALUE(Sub_Brand_Description)          AS Subbrand,
