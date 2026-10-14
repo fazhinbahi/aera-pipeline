@@ -117,6 +117,16 @@ def load(area):
         df[c] = df[c].fillna("").astype(str).str.strip()
     df["Customer_Name"] = df["Customer_Name"].replace("", "(unnamed customer)")
     df["Size"] = pd.to_numeric(df["Size"], errors="coerce")
+
+    # The master spells one sub-brand several ways — BUSHMILLS ORIGINAL beside
+    # Bushmills Original, KRAKEN SPICED RUM beside Kraken Spiced Rum. Left alone
+    # each product splits into two blocks on MARKET and two rows on TOP
+    # PRODUCTS, so the same tequila appears to be two smaller ones. Same
+    # canonicalisation the pre-work and the accuracy dashboard use, so the three
+    # agree on what a sub-brand is.
+    from prework_pdf import _canon_subbrand_map
+    cmap = _canon_subbrand_map(df["Subbrand"])
+    df["Subbrand"] = df["Subbrand"].map(cmap).fillna(df["Subbrand"])
     return df, have
 
 
@@ -179,7 +189,15 @@ def build(area_key="patrick"):
         cs = [c for c, _ in mcols if c.startswith(f"FC_{yr}_")]
         df[f"TOT_{yr}"] = df[cs].sum(axis=1) if cs else 0.0
     df[f"TOT_{ACT_YEAR}"] = df[act_cols].sum(axis=1)
-    return area, df, mcols, act_cols, live
+
+    # A row with no actuals and no forecast in any year is a master-data
+    # association, not a line of business: the SKU is attached to the customer
+    # and has never moved. Over half this area's rows are that. They carry no
+    # volume, so dropping them cannot change a total, and leaving them in is how
+    # a review sheet becomes something nobody reads to the bottom of.
+    vol = df[[f"TOT_{y}" for y in (ACT_YEAR,) + FC_YEARS]].abs().sum(axis=1)
+    dormant = df[vol == 0]
+    return area, df[vol > 0].copy(), mcols, act_cols, live, dormant
 
 
 # ── Excel ─────────────────────────────────────────────────────────────────────
@@ -434,7 +452,7 @@ def main():
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
-    area, df, mcols, act_cols, live = build(args.area)
+    area, df, mcols, act_cols, live, dormant = build(args.area)
     lf = live[FC_YEARS[-1]]
 
     notes = [
@@ -442,6 +460,11 @@ def main():
          f"Aera's horizon reaches {lf[-1]} 2028, so the 2028 total covers {len(lf)} months "
          f"({lf[0]}–{lf[-1]}), not twelve. Set beside a full 2027 it will look like a fall "
          f"that is not there. AREA SUMMARY carries a like-for-like pair on those months.", True),
+        ("Dormant SKUs excluded",
+         f"{len(dormant)} SKU-customer rows carry no actuals and no forecast in any year — "
+         f"the SKU is attached to the customer in master data and has never moved. They are "
+         f"left out of every sheet; carrying no volume, they change no total. Ask for them "
+         f"if you want the assignment list.", False),
         ("Units",
          "Every figure is 9L cases. The APAC IMC Australia tracker carried 2028 in physical "
          "cases while 2026 and 2027 were in 9L, which turned growth into an apparent 44% "
