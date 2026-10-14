@@ -37,18 +37,36 @@ P, D = Q.GCP_PROJECT, Q.DATASET
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-# An area is a list of rules, because a manager's patch is not a country list:
-# in UAE and Germany they hold one named customer while other customers in the
-# same country belong to someone else.
+# An area is a list of rules, because a manager's patch is not a country list.
+# A rule is {market, country} plus any of:
+#   include  LIKE pattern — only this customer in that country is theirs
+#   exclude  LIKE pattern — the country is theirs apart from this customer
+#   club     label        — report the market's customers as one line
+# The same country can therefore be split between two managers, which is how
+# UAE works: Indu World is Patrick's, everything else is Michel's.
 AREAS = {
     "patrick": {
         "manager": "Patrick",
         "sub_segment": "EMEA ENTERP",
         "scope": [
-            # market label        country in Aera    customer filter (None = whole market)
-            ("United Arab Emirates", "Utd.Arab Emir.", "%INDU WORLD%"),
-            ("Netherlands",          "Netherlands",    None),
-            ("Germany",              "Germany",        "%XORTA%"),
+            {"market": "United Arab Emirates", "country": "Utd.Arab Emir.",
+             "include": "%INDU WORLD%"},
+            {"market": "Netherlands", "country": "Netherlands"},
+            {"market": "Germany", "country": "Germany", "include": "%XORTA%"},
+        ],
+    },
+    "michel": {
+        "manager": "Michel",
+        "sub_segment": "EMEA ENTERP",
+        "scope": [
+            {"market": "United Arab Emirates", "country": "Utd.Arab Emir.",
+             "exclude": "%INDU WORLD%", "club": "All customers (excl. Indu World)"},
+            {"market": "Lebanon", "country": "Lebanon"},
+            {"market": "Cyprus",  "country": "Cyprus"},
+            {"market": "Qatar",   "country": "Qatar"},
+            {"market": "Iraq",    "country": "Iraq"},
+            {"market": "Jordan",  "country": "Jordan"},
+            {"market": "Türkiye", "country": "Türkiye"},
         ],
     },
 }
@@ -56,24 +74,26 @@ AREAS = {
 ACT_YEAR, FC_YEARS = 2025, (2026, 2027, 2028)
 
 
+def _rule_sql(r):
+    c = f"Country_Name = '{r['country']}'"
+    if r.get("include"):
+        c += f" AND UPPER(Customer_Name) LIKE '{r['include'].upper()}'"
+    if r.get("exclude"):
+        # COALESCE so a customer with no name is kept rather than dropped by the
+        # NULL — UAE has one, and it carries volume.
+        c += (f" AND COALESCE(UPPER(Customer_Name),'') NOT LIKE "
+              f"'{r['exclude'].upper()}'")
+    return c
+
+
 def _where(area):
-    legs = []
-    for _, country, cust in area["scope"]:
-        leg = f"Country_Name = '{country}'"
-        if cust:
-            leg += f" AND UPPER(Customer_Name) LIKE '{cust.upper()}'"
-        legs.append(f"({leg})")
-    return f"Sub_Segments = '{area['sub_segment']}' AND (" + " OR ".join(legs) + ")"
+    legs = " OR ".join(f"({_rule_sql(r)})" for r in area["scope"])
+    return f"Sub_Segments = '{area['sub_segment']}' AND ({legs})"
 
 
 def _market_case(area):
-    whens = []
-    for market, country, cust in area["scope"]:
-        c = f"Country_Name = '{country}'"
-        if cust:
-            c += f" AND UPPER(Customer_Name) LIKE '{cust.upper()}'"
-        whens.append(f"WHEN {c} THEN '{market}'")
-    return "CASE " + " ".join(whens) + " ELSE Country_Name END"
+    whens = " ".join(f"WHEN {_rule_sql(r)} THEN '{r['market']}'" for r in area["scope"])
+    return f"CASE {whens} ELSE Country_Name END"
 
 
 def load(area):
@@ -116,6 +136,13 @@ def load(area):
     for c in ["Customer_Name", "Description", "Category", "Subbrand", "Brand_Family"]:
         df[c] = df[c].fillna("").astype(str).str.strip()
     df["Customer_Name"] = df["Customer_Name"].replace("", "(unnamed customer)")
+
+    # Where a market is held as a whole rather than account by account, report it
+    # as one line: the manager works the market, and splitting it across accounts
+    # that happen to carry separate numbers only buries the market's own trend.
+    for r in area["scope"]:
+        if r.get("club"):
+            df.loc[df["Market"] == r["market"], "Customer_Name"] = r["club"]
     df["Size"] = pd.to_numeric(df["Size"], errors="coerce")
 
     # The master spells one sub-brand several ways — BUSHMILLS ORIGINAL beside
@@ -423,9 +450,13 @@ def sheet_instructions(wb, area, df, live, notes):
     r += 1
 
     head("SCOPE — this is a patch, not a country list")
-    for market, country, cust in area["scope"]:
-        line(market, f"Aera country '{country}'" +
-             (f", customer matching '{cust}' only" if cust else ", all customers"))
+    for rule in area["scope"]:      # not r: that is this function's row counter
+        bits = [f"Aera country '{rule['country']}'"]
+        if rule.get("include"): bits.append(f"customer matching '{rule['include']}' only")
+        if rule.get("exclude"): bits.append(f"every customer except '{rule['exclude']}'")
+        if not rule.get("include") and not rule.get("exclude"): bits.append("all customers")
+        if rule.get("club"):    bits.append(f"reported as one line, '{rule['club']}'")
+        line(rule["market"], ", ".join(bits))
     r += 1
 
     head("READ THESE BEFORE QUOTING A NUMBER")
