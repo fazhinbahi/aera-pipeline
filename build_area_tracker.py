@@ -295,7 +295,7 @@ def sheet_market(wb, df, mcols, act_cols, live):
     return ws
 
 
-def sheet_by_sku(wb, df, mcols, act_cols, review=False):
+def sheet_by_sku(wb, df, mcols, act_cols, review=False, verdicts=None):
     name = "BY SKU REVIEW" if review else "BY SKU"
     extra = ["Review", "Why"] if review else []
     hdr = (["Market", "Customer", "Category", "Subbrand", "L",
@@ -309,19 +309,27 @@ def sheet_by_sku(wb, df, mcols, act_cols, review=False):
                  "One row per Market / Customer / SKU. Sorted by 2026 volume."),
                 hdr, [22, 30, 18, 26, 7, 16, 38] + [14] * len(extra)
                      + [13] * 4 + [12] * len(mcols))
-    d = df.sort_values(["Market", "Customer_Name", f"TOT_{FC_YEARS[0]}"],
-                       ascending=[True, True, False])
+    d = df.copy()
+    if verdicts is not None:
+        d["_v"], d["_w"] = [v for v, _ in verdicts], [w for _, w in verdicts]
+    d = d.sort_values(["Market", "Customer_Name", f"TOT_{FC_YEARS[0]}"],
+                      ascending=[True, True, False])
     r = 5
     for _, x in d.iterrows():
+        note = [x.get("_v", None), x.get("_w", None)] if extra else []
         vals = ([x.Market, x.Customer_Name, x.Category, x.Subbrand, x.Size_s,
-                 str(x.Material_Number), x.Description] + [None] * len(extra)
+                 str(x.Material_Number), x.Description] + note
                 + [x[f"TOT_{y}"] for y in FC_YEARS] + [x[f"TOT_{ACT_YEAR}"]]
                 + [x[c] for c, _ in mcols])
         r = _write(ws, r, vals)
     if review:
         for row in range(5, r):
             for col in (8, 9):
-                ws.cell(row=row, column=col).fill = MANUAL
+                c = ws.cell(row=row, column=col)
+                c.fill = MANUAL
+                c.alignment = Alignment(wrap_text=True, vertical="top")
+        ws.column_dimensions["H"].width = 30
+        ws.column_dimensions["I"].width = 72
     return ws
 
 
@@ -490,7 +498,7 @@ def main():
     sheet_summary(wb, df, live)
     sheet_market(wb, df, mcols, act_cols, live)
     sheet_by_sku(wb, df, mcols, act_cols, review=False)
-    sheet_by_sku(wb, df, mcols, act_cols, review=True)
+    sheet_by_sku(wb, df, mcols, act_cols, review=True, verdicts=review_rows(df, live))
     sheet_top(wb, df)
     sheet_instructions(wb, area, df, live, notes)
     wb._sheets = [wb["INSTRUCTIONS"], wb["AREA SUMMARY"], wb["MARKET"],
@@ -505,6 +513,82 @@ def main():
     for y in (ACT_YEAR,) + FC_YEARS:
         print(f"    {y}: {df[f'TOT_{y}'].sum():>12,.1f}")
 
+
+
+
+# ── Review ────────────────────────────────────────────────────────────────────
+
+def review_rows(df, live):
+    """Fill Review and Why per row, from this area's own numbers.
+
+    Written as code rather than typed in once, so a rebuild re-derives it and it
+    cannot drift from the figures beside it. The planner overwrites any of it:
+    this is a first pass, not a verdict.
+    """
+    lf = live[FC_YEARS[-1]]
+    p = lambda row, yr: sum(row.get(f"FC_{yr}_{m}", 0) for m in lf)
+    d = df.copy()
+    d["_26"] = d["TOT_2026"]; d["_27"] = d["TOT_2027"]
+    d["_p27"] = d.apply(lambda r: p(r, 2027), axis=1)
+    d["_p28"] = d.apply(lambda r: p(r, 2028), axis=1)
+
+    # A forecast repeated to the decimal across unrelated codes is an even
+    # spread, not a plan for each of them.
+    spread = {v for v, n in d.loc[d._27 > 0, "_27"].round(1).value_counts().items() if n >= 3}
+
+    out = []
+    for _, r in d.iterrows():
+        sib = d[(d.Market == r.Market) & (d.Subbrand == r.Subbrand)
+                & (d.Size_s == r.Size_s) & (d.Material_Number != r.Material_Number)]
+        stops = r._26 > 0 and r._27 == 0 and r.TOT_2028 == 0
+        starts = r.TOT_2025 == 0 and r._26 == 0 and r._27 > 0
+        taker = sib[(sib.TOT_2025 == 0) & (sib._26 == 0) & (sib._27 > 0)]
+        giver = sib[(sib._26 > 0) & (sib._27 == 0)]
+
+        if stops and len(taker):
+            t = taker.iloc[0]
+            v, w = ("SUCCESSION — check carry-over",
+                    f"Stops after 2026 ({r._26:,.0f}). {t.Material_Number} picks the grain up "
+                    f"at {t._27:,.0f} in 2027 — "
+                    + ("only {:.0%} of this code's 2026, so the changeover looks like it lost "
+                       "the volume rather than moved it.".format(t._27 / r._26)
+                       if t._27 < r._26 * 0.5 else "continuity looks intact."))
+        elif starts and len(giver):
+            g = giver.iloc[0]
+            v, w = ("SUCCESSION — successor code",
+                    f"Takes over from {g.Material_Number}, which ran {g._26:,.0f} in 2026. "
+                    f"This code carries {r._27:,.0f} in 2027.")
+        elif r._27 == 0 and r.TOT_2028 == 0 and (r.TOT_2025 > 0 or r._26 > 0):
+            base = max(r.TOT_2025, r._26)
+            v, w = ("DELISTED? — no forward plan",
+                    f"Last volume {base:,.0f} ({'2025' if r.TOT_2025 >= r._26 else '2026'}), "
+                    f"nothing forecast in 2027 or 2028 and no successor code in this market. "
+                    f"Confirm it is delisted, or the plan is missing.")
+        elif round(r._27, 1) in spread:
+            v, w = ("FLAT ALLOCATION — not a plan",
+                    f"2027 is {r._27:,.1f}, the same figure to the decimal on several unrelated "
+                    f"codes in this market. That is a spread, not a forecast for this SKU.")
+        elif r.TOT_2025 == 0 and r._26 > 0:
+            v, w = ("NEW — no 2025 base",
+                    f"First volume in 2026 ({r._26:,.0f}). No 2025 history to judge it against; "
+                    f"check whether it is a genuine listing or a code change from an older SKU.")
+        elif r._p27 > 0 and r._p28 < r._p27 * 0.6:
+            v, w = ("STEP-DOWN into 2028",
+                    f"On {lf[0]}–{lf[-1]}, 2028 is {r._p28:,.0f} against 2027's {r._p27:,.0f}, "
+                    f"down {1 - r._p28 / r._p27:.0%} on a like-for-like window. Not a part-year "
+                    f"effect — same months both sides.")
+        elif r._26 > 0 and r._27 > r._26 * 1.6:
+            v, w = ("STEP-UP into 2027",
+                    f"2027 is {r._27:,.0f} against 2026's {r._26:,.0f}, up {r._27 / r._26 - 1:.0%}. "
+                    f"Check the listing or promotion behind it.")
+        elif r._26 > 0 and r._27 < r._26 * 0.5:
+            v, w = ("DECLINE into 2027",
+                    f"2027 is {r._27:,.0f} against 2026's {r._26:,.0f}, down "
+                    f"{1 - r._27 / r._26:.0%}.")
+        else:
+            v, w = ("", "")
+        out.append((v, w))
+    return out
 
 if __name__ == "__main__":
     main()
