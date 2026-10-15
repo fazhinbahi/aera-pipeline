@@ -47,6 +47,13 @@ def _order(period: str) -> tuple[int, int]:
     mon, year = period.split("_")
     return int(year), MONTHS.index(mon)
 
+
+def _shift_period(period: str, n: int) -> str:
+    """The period n months on — used to name the run that follows a month."""
+    mon, year = period.split("_")
+    i = MONTHS.index(mon) + n
+    return _key(MONTHS[i % 12], int(year) + i // 12)
+
 # Lag is ORDINAL, so one hue light->dark rather than categorical hues. A six-step
 # single-hue ramp cannot hold visible gaps between every adjacent pair, so the
 # per-lag comparisons use one hue and the multi-lag trend uses the categorical
@@ -211,6 +218,26 @@ if missing:
 
 with st.sidebar:
     st.header("Filters")
+
+    # As-at: rewind the page to what a past stat run could have shown. A stat run
+    # in month M can only report on months already closed, so choosing it drops
+    # every target month from M onwards. The forecasts themselves need no
+    # rewinding — n-3 for September is the June snapshot whenever you ask — so
+    # this restates the scope, not the numbers inside it.
+    AS_AT = ["Latest"] + [_shift_period(p, 1) for p in reversed(AVAIL)]
+    as_at = st.selectbox(
+        "As at stat run", AS_AT, index=0,
+        format_func=lambda s: "Latest — every closed month" if s == "Latest"
+                              else f"{_label(s)} run",
+        help="What this page could have shown at a past cycle. A run in October "
+             "reports on months up to September. Lag forecasts are frozen at the "
+             "snapshot they came from, so they do not move; actuals are today's "
+             "final figures, which for an already-closed month differ from the "
+             "day of that run by about 1% (Jan–Apr 2026 by 0.00%, May by 1.06%).")
+    scope = AVAIL if as_at == "Latest" else [p for p in AVAIL if _order(p) < _order(as_at)]
+    if not scope:
+        st.warning("No closed months at that run."); st.stop()
+
     def pick(label, col):
         opts = sorted(x for x in df[col].unique() if x)
         chosen = st.multiselect(label, opts, default=[])
@@ -223,7 +250,7 @@ with st.sidebar:
     # Back into calendar order: a multiselect hands its values back in the order
     # they were picked, so re-adding one chip puts that month first on every axis
     # that sorts on this list.
-    months = sorted(st.multiselect("Months", AVAIL, default=AVAIL,
+    months = sorted(st.multiselect("Months", scope, default=scope,
                                    format_func=_label), key=_order)
     netted = st.toggle(
         "Net within UPC", value=False,
@@ -233,6 +260,16 @@ with st.sidebar:
              "back to their sub-brand here rather than being dropped, so this runs "
              "above the pre-work's Error ABS UPC, which excludes them as Power BI "
              "does.")
+
+if as_at != "Latest":
+    st.info(
+        f"**Rewound to the {_label(as_at)} stat run.** Showing the "
+        f"{len(scope)} month{'s' if len(scope) != 1 else ''} closed by then, "
+        f"{_label(scope[0])}–{_label(scope[-1])}, against the forecasts as they "
+        f"stood at each horizon. {len(AVAIL) - len(scope)} later month"
+        f"{'s are' if len(AVAIL) - len(scope) != 1 else ' is'} held back. "
+        f"Actuals are today's final figures — an already-closed month has moved "
+        f"about 1% since.")
 
 d = df.copy()
 for col, sel in [("Sub_Segments", f_seg), ("Country_Name", f_ctry),
