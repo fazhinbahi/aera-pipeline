@@ -200,6 +200,27 @@ def fetch_lag_pair(snapshot_month, forecast_month, token, jsessionid, lb):
     agg = df.groupby(["Material_Number", "Country_Name", "Customer_Number"], as_index=False)["Adjusted_FC"].sum()
     agg = agg[agg["Adjusted_FC"] != 0]
 
+    # Drop the un-countried block before anything measures this snapshot.
+    #
+    # Two different source defects look identical in a total. May and Jun 2026
+    # are genuinely doubled: every grain is 2x, Australia included, and halving
+    # the column is right. Sep 2026 is not doubled at all — Australia reads
+    # 934,691 against 924,504 in Aug and 943,212 in Oct — but it carries a
+    # second, un-countried copy of the book under Country = "Not Set", 8.7m
+    # cases, 49.7% of the snapshot. A total cannot tell the two apart, so a
+    # doubling check run on one would halve Sep's correctly-keyed grains in half.
+    #
+    # Dropping Not Set separates them: Sep then reads 1.0x and is left alone,
+    # while May and Jun still read 2.0x and are still corrected. Nothing real is
+    # lost — a clean snapshot carries 300-900 cases here against millions.
+    ns = agg["Country_Name"].astype(str).str.strip().eq("Not Set")
+    if ns.any():
+        lost = agg.loc[ns, "Adjusted_FC"].sum()
+        share = lost / agg["Adjusted_FC"].sum() * 100
+        print(f"    dropped {ns.sum():,} 'Not Set' rows ({lost:,.0f} cases, {share:.1f}%)"
+              + ("  ← phantom block, not real volume" if share > 5 else ""))
+        agg = agg[~ns]
+
     print(f"{total:,} rows → {len(agg):,} customer×material×country grains "
           f"({time.time()-t0:.0f}s)")
     return agg
