@@ -135,6 +135,18 @@ if deck:
                 st.dataframe(shown, use_container_width=True)
                 for n in s.demand_plan.footnotes:
                     st.caption(n)
+            if s.demand_plan_rtd is not None:
+                st.markdown("**Unconstrained Demand Plan – RTDs** (9LC)")
+                st.markdown("  \n".join(f"• {h.replace(chr(10), ' · ')}" for h in s.demand_plan_rtd.highlights))
+                dr = s.demand_plan_rtd.table.copy()
+                shown_r = dr.copy().astype(object)
+                for r in dr.index:
+                    for c in dr.columns:
+                        v = dr.at[r, c]
+                        shown_r.at[r, c] = fmt_pct_paren(v) if r in s.demand_plan_rtd.pct_rows else fmt_int(v)
+                st.dataframe(shown_r, use_container_width=True)
+                for n in s.demand_plan_rtd.footnotes:
+                    st.caption(n)
             for b in s.bridges:
                 st.markdown(f"**{b.title}**")
                 rows = [(b.start_label, b.start)] + list(b.steps) + [(b.end_label, b.end)]
@@ -183,6 +195,7 @@ else:
         "1. **Unconstrained Demand Plan** — the rows of Aera's Forecast Adjustments screen for the scope "
         "(Source FC, Adjusted FC, RR Actuals + Adj FC, Previous Month Consensus, Last Year, Sales Orders, "
         "Budget, LE) plus the two % rows, as two year blocks, on Aera's own month cycle.\n"
+        "   A second slide repeats the table for the RTDs category where the market has RTD volume.\n"
         "2. **MoM Bridge** — waterfall from the Previous Month Consensus (N-1) to the Adjusted Forecast (N): "
         "by country for a sub-segment, by category for a country.\n"
         "3. **NPD tracking** — one Innovations slide: launches of the last 12 months and upcoming NMIs, month by month.\n"

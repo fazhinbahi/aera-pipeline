@@ -75,6 +75,7 @@ class Section:
     """One market's set of slides."""
     name: str                               # e.g. 'IMC Australia'
     demand_plan: Optional[DemandPlan] = None
+    demand_plan_rtd: Optional[DemandPlan] = None   # same table, RTDs category only (second slide)
     npd: Optional[NpdTracking] = None
     drivers: Optional[N3Drivers] = None
     bridges: list = field(default_factory=list)   # Bridge objects, in display order
@@ -312,11 +313,17 @@ def _plan_block(slide, df: pd.DataFrame, cols: list[str], pct_rows: list[str],
 
 
 def add_demand_plan_slide(prs: Presentation, section: Section, scope_code: str,
-                          cycle_year: int, next_year: int):
-    """Two stacked blocks, plan year and next year, instead of one 21-column strip."""
-    dp = section.demand_plan
-    slide = _content_slide(prs, f"Unconstrained Demand Plan _ {section.name}", section.figures_note)
+                          cycle_year: int, next_year: int, plan: Optional[DemandPlan] = None,
+                          suffix: str = ""):
+    """Two stacked blocks, plan year and next year, instead of one 21-column strip.
+    `plan` defaults to the section's whole-scope table; the RTDs slide passes
+    section.demand_plan_rtd with suffix 'RTDs'."""
+    dp = plan or section.demand_plan
+    title = f"Unconstrained Demand Plan _ {section.name}" + (f" – {suffix}" if suffix else "")
+    slide = _content_slide(prs, title, section.figures_note)
     _key_highlights(slide, dp.highlights, top=0.92, height=0.62)
+    if suffix:
+        scope_code = f"{scope_code} {suffix}"
 
     df = dp.table
     cols = list(df.columns)
@@ -884,6 +891,9 @@ def build_deck(deck_title: str, sections: list[Section], cycle_label: str, cycle
     for s in sections:
         if s.demand_plan is not None:
             add_demand_plan_slide(prs, s, scope_codes.get(s.name, ""), cycle_year, next_year)
+        if s.demand_plan_rtd is not None:
+            add_demand_plan_slide(prs, s, scope_codes.get(s.name, ""), cycle_year, next_year,
+                                  plan=s.demand_plan_rtd, suffix="RTDs")
         if s.bridges:
             add_bridge_slide(prs, s)
         if s.npd is not None:

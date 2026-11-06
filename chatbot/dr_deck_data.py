@@ -493,10 +493,13 @@ class FaScope:
     totals: dict = field(default_factory=dict)   # key -> {YTD, YTG, CURRENT_YEAR_TOTAL, NEXT_YEAR_TOTAL}
 
 
-def fetch_fa_rows(sub_segment: str, countries: list[str], all_countries: list[str]) -> Optional[FaScope]:
+def fetch_fa_rows(sub_segment: str, countries: list[str], all_countries: list[str],
+                  category: str = "") -> Optional[FaScope]:
     """Latest fa_screen_rows for the scope. The sub-segment total rows
     (Country = '') are used when every country is selected, otherwise the
-    per-country rows are summed (all kept lines are additive)."""
+    per-country rows are summed (all kept lines are additive).
+    `category` ('' = whole scope, or a screen category such as 'RTDS') picks
+    the rows fetched with that Category filter; None when the scope has none."""
     params = _scope_params(sub_segment, countries)
     try:
         # latest fetch per row key, so a market re-fetched on its own (appended
@@ -526,7 +529,7 @@ def fetch_fa_rows(sub_segment: str, countries: list[str], all_countries: list[st
         return d[d["Country_Name"].isin(country_filter)] if isinstance(country_filter, (list, set)) \
             else d[d["Country_Name"] == country_filter]
 
-    scope_rows = _rows("", "") if whole else _rows(list(countries), "")
+    scope_rows = _rows("", category) if whole else _rows(list(countries), category)
     if scope_rows.empty:
         return None
     monthly: dict = {}
@@ -546,9 +549,9 @@ def fetch_fa_rows(sub_segment: str, countries: list[str], all_countries: list[st
         t = rows[rows["Period"] == "CURRENT_YEAR_TOTAL"]
         return {FA_LINE[l]: float(t[t["Line"] == l]["Value"].sum()) for l in FA_LINE}
 
-    by_country = {c: _totals(_rows(c, "")) for c in countries
-                  if not _rows(c, "").empty}
-    cats = sorted({c for c in df["Category"].unique() if c})
+    by_country = {c: _totals(_rows(c, category)) for c in countries
+                  if not _rows(c, category).empty}
+    cats = sorted({c for c in df["Category"].unique() if c}) if not category else []
     by_category = {}
     for cat in cats:
         rows = _rows("", cat) if whole else _rows(list(countries), cat)
@@ -558,8 +561,9 @@ def fetch_fa_rows(sub_segment: str, countries: list[str], all_countries: list[st
                    len(countries), totals)
 
 
-def demand_plan_from_fa(fa: FaScope, cycle: Cycle, sub_segment: str) -> DemandPlan:
-    """The deck's demand-plan table straight from the screen rows."""
+def demand_plan_from_fa(fa: FaScope, cycle: Cycle, sub_segment: str, category: str = "") -> DemandPlan:
+    """The deck's demand-plan table straight from the screen rows
+    (`category` only labels the source note, e.g. 'RTDS')."""
     y, ny = cycle.year, cycle.next_year
     cols = period_columns(cycle)
     # Next year's "Last Year" is this year's Adj. Forecast row (orders for
@@ -626,8 +630,9 @@ def demand_plan_from_fa(fa: FaScope, cycle: Cycle, sub_segment: str) -> DemandPl
         "Risks / opportunities: to be added",
         f"FY {ny} {_sgn(tbl.at[ROW_VSLY, nfy])} vs FY{yy} projection",
     ]
-    notes = [f"Source: Aera Forecast Adjustments screen, {sub_segment}, fetched {fa.fetch_date:%d %b %Y}; "
-             f"closed through {cycle.last_closed:%b %Y}."]
+    notes = [f"Source: Aera Forecast Adjustments screen, {sub_segment}"
+             + (f", category {category}" if category else "")
+             + f", fetched {fa.fetch_date:%d %b %Y}; closed through {cycle.last_closed:%b %Y}."]
     if fa.n_countries > 1:
         notes.append(f"Sum of {fa.n_countries} countries' screen rows.")
     return DemandPlan(tbl, [ROW_VSBUD, ROW_VSLY], highlights, notes)

@@ -69,11 +69,18 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
     for name, cs, is_region in scopes:
         fa = fetch_fa_rows(sub_segment, cs, all_countries)
         why = ""
+        dp_rtd = None
         if fa is not None:
             # Preferred: the Forecast Adjustments screen rows, Aera's own cycle
             cycle = Cycle.from_aera(fa.closed_through, fa.year)
             log(f"{name}: demand plan from the Aera screen (fetched {fa.fetch_date:%d %b %Y})")
             dp = demand_plan_from_fa(fa, cycle, sub_segment)
+            fa_rtd = fetch_fa_rows(sub_segment, cs, all_countries, category="RTDS")
+            if fa_rtd is not None:
+                dp_rtd = demand_plan_from_fa(fa_rtd, cycle, sub_segment, category="RTDS")
+                log(f"{name}: RTDs demand plan from the Aera screen")
+            else:
+                log(f"{name}: no RTDs rows on the Aera screen — RTDs slide skipped")
             bridges = []
             if is_region:
                 bridges.append(bridge_from_fa(fa, "country", cycle))
@@ -102,8 +109,8 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
             rca = fetch_rca_drivers(sub_segment, cs)
         except Exception as e:              # the datos_reducidos tables are optional
             log(f"{name}: accuracy series unavailable ({e})")
-        sections.append(Section(name=name, demand_plan=dp, npd=npd, drivers=drv, bridges=bridges,
-                                accuracy=acc, rca=rca, baseline_note=why, cycle=cycle))
+        sections.append(Section(name=name, demand_plan=dp, demand_plan_rtd=dp_rtd, npd=npd, drivers=drv,
+                                bridges=bridges, accuracy=acc, rca=rca, baseline_note=why, cycle=cycle))
     return sections
 
 
@@ -147,6 +154,8 @@ def build_xlsx(sections: list[Section]) -> bytes:
             stem = s.name[:22]
             if s.demand_plan is not None:
                 s.demand_plan.table.round(1).to_excel(xw, sheet_name=_sheet(f"{stem} plan"))
+            if s.demand_plan_rtd is not None:
+                s.demand_plan_rtd.table.round(1).to_excel(xw, sheet_name=_sheet(f"{stem} plan RTDs"))
             if s.npd is not None and not s.npd.table.empty:
                 s.npd.table.to_excel(xw, sheet_name=_sheet(f"{stem} NPD"), index=False)
             if s.drivers is not None:
