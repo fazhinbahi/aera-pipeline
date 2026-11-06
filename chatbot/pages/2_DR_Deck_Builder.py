@@ -11,6 +11,15 @@ import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import importlib
+
+import dr_deck_data, dr_deck_accuracy, dr_deck_pptx, dr_deck_build  # noqa: E401
+# Streamlit Cloud re-runs this page on every request but keeps imported modules
+# cached in the process, so a push that only touches the deck modules would not
+# be live until a manual reboot. Reloading them here (dependency order) keeps
+# the hosted page on the pushed code; the cost is a few milliseconds.
+for _m in (dr_deck_data, dr_deck_accuracy, dr_deck_pptx, dr_deck_build):
+    importlib.reload(_m)
 from dr_deck_build import build, build_xlsx
 from dr_deck_data import Cycle, data_freshness, fetch_aera_cycle, fetch_scope_map
 from dr_deck_pptx import fmt_int, fmt_pct_paren
