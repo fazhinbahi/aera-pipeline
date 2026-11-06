@@ -80,7 +80,7 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
                 dp_rtd = demand_plan_from_fa(fa_rtd, cycle, sub_segment, category="RTDS")
                 log(f"{name}: RTDs demand plan from the Aera screen")
             else:
-                log(f"{name}: no RTDs rows on the Aera screen — RTDs slide skipped")
+                log(f"{name}: no RTDs rows on the Aera screen — RTDs slide carries a note instead of the table")
             bridges = []
             if is_region:
                 bridges.append(bridge_from_fa(fa, "country", cycle))

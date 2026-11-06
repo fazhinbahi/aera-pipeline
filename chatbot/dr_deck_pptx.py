@@ -891,9 +891,16 @@ def build_deck(deck_title: str, sections: list[Section], cycle_label: str, cycle
     for s in sections:
         if s.demand_plan is not None:
             add_demand_plan_slide(prs, s, scope_codes.get(s.name, ""), cycle_year, next_year)
+        # The RTDs slide is always there (Faizan, 6 Nov 2026), so every deck has the
+        # same structure; markets without RTD products get the slide with a note.
         if s.demand_plan_rtd is not None:
             add_demand_plan_slide(prs, s, scope_codes.get(s.name, ""), cycle_year, next_year,
                                   plan=s.demand_plan_rtd, suffix="RTDs")
+        else:
+            slide = _content_slide(prs, f"Unconstrained Demand Plan _ {s.name} – RTDs", s.figures_note)
+            _textbox(slide, "No RTD products are forecast or sold for this market in Aera "
+                            "(no RTDS category on its Forecast Adjustments screen), so there is no RTDs "
+                            "demand plan to show.", MARGIN_L, 1.4, 12, 0.6, size=12, color=MUTED)
         if s.bridges:
             add_bridge_slide(prs, s)
         if s.npd is not None:
