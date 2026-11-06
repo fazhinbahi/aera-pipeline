@@ -10,6 +10,9 @@
 # Keep forecast_3yr_full.parquet — needed by SF fetch for pairs + sub-segment proportions
 !forecast_3yr_full.parquet
 *.csv
+# Pipeline inputs that must travel with the code (consensus cycle calendar, material→UPC seed)
+!consensus_calendar.csv
+!material_upc_seed.csv
 *.xlsx
 *.pdf
 *.docx

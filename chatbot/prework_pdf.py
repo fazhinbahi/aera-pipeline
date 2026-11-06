@@ -23,7 +23,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    PageBreak, Image, HRFlowable,
+    PageBreak, Image, HRFlowable, KeepTogether,
 )
 
 from prework_queries import (CLOSED_2026, OPEN_2026, LAST_CLOSED, _ALL_MONTHS,
@@ -254,6 +254,12 @@ SKU_SUCCESSORS = {
     "311808": "311814",   # Kraken Rum & Cola 6x4 330ml -> 375ml
     "311809": "311815",   # Kraken Rum & Dry  6x4 330ml -> 375ml
     "311812": "311814",   # Kraken Rum & Cola 10x3 330ml -> 6x4 375ml
+    # Sparkling Margarita 6x4x330ml -> the "T" code. Same sub-brand and same
+    # 0.33 size, so unlike the Kraken pairs this one is a chain Aera itself will
+    # accept; raised as a SKU Update so the mapping lands at source too. The
+    # handover is visible in the actuals — 701056 runs 2,614 / 948 / 21 / 16
+    # across Jun-Sep 2026 while 701060 runs 555 / 2,095 / 2,838 / 5,144.
+    "701056": "701060",
 }
 
 
@@ -387,17 +393,27 @@ def _gpt(prompt: str, client: "anthropic.Anthropic") -> str:
     try:
         resp = client.messages.create(
             model="claude-sonnet-5",
-            max_tokens=160,
+            # 160 cut the richer 2027-vs-2026 prompts off mid-sentence; 220 with
+            # the word cap below gives three full sentences that still fit in the
+            # space left under the section-2 tables.
+            max_tokens=220,
             system=(
                 "You are a concise demand planning analyst. Write 2-3 sentences "
-                "of professional insight. No bullet points. No headers. Be direct and specific."
+                "of professional insight, at most 75 words in total. No bullet points. "
+                "No headers. Be direct and specific, and finish your last sentence."
             ),
             messages=[{"role": "user", "content": prompt}],
         )
+        text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        # The model does not reliably honour the word cap, so when it runs into
+        # the token limit the last sentence is a fragment: keep whole sentences.
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            cut = max(text.rfind("."), text.rfind("!"), text.rfind("?"))
+            if cut > len(text) * 0.4:
+                text = text[:cut + 1]
         # Escaped: the commentary quotes product names back ("Kraken
         # Cherry&Vanilla"), and it is rendered as a ReportLab paragraph.
-        return escape("".join(b.text for b in resp.content
-                              if b.type == "text").strip())
+        return escape(text)
     except Exception:
         return ""
 
@@ -493,14 +509,39 @@ def build_prework_pdf(
     today_str  = today.strftime("%d %B %Y")
     cycle      = today.strftime("%B %Y")
 
-    # Precompute YTD 2026 volumes (used in multiple sections)
-    ytd_cols = [f"Actual_{m}_2026" for m in CLOSED_2026 if f"Actual_{m}_2026" in ca.columns]
-    if ytd_cols and not ca.empty:
-        ca = ca.copy()
-        ca["_YTD_2026"] = ca[ytd_cols].sum(axis=1)
+    # Precompute per-row year volumes (used in multiple sections).
+    #   _YTD_2026 : closed-month actuals only
+    #   _FY_2026  : the 2026 run-rate — actuals for the closed months plus the
+    #               Adjusted Forecast for the months still open ("2026 (A+F)")
+    #   _FY_2027  : the full-year 2027 Adjusted Forecast, the plan under review
+    # Both full years are built from the month columns rather than the table's
+    # Total_ columns so they agree with the monthly views to the unit, and so a
+    # re-opened month (build_prework_cycle.py) is counted the way it reads.
+    ca = ca.copy()
+    ytd_cols  = [f"Actual_{m}_2026" for m in CLOSED_2026 if f"Actual_{m}_2026" in ca.columns]
+    fy26_cols = ytd_cols + [f"AdjFC_{m}_2026" for m in OPEN_2026 if f"AdjFC_{m}_2026" in ca.columns]
+    fy27_cols = [f"AdjFC_{m}_2027" for m in _ALL_MONTHS if f"AdjFC_{m}_2027" in ca.columns]
+    if ca.empty:
+        ca["_YTD_2026"] = ca["_FY_2026"] = ca["_FY_2027"] = 0.0
     else:
-        ca = ca.copy()
-        ca["_YTD_2026"] = 0
+        ca["_YTD_2026"] = ca[ytd_cols].sum(axis=1)  if ytd_cols  else 0.0
+        ca["_FY_2026"]  = ca[fy26_cols].sum(axis=1) if fy26_cols else 0.0
+        ca["_FY_2027"]  = (ca[fy27_cols].sum(axis=1) if fy27_cols
+                           else ca["AdjFC_Total_2027"] if "AdjFC_Total_2027" in ca.columns
+                           else 0.0)
+
+    def _v26(df, m):
+        """A 2026 month as the document reads it: actual once closed, AdjFC while open."""
+        return _col_sum(df, f"Actual_{m}_2026" if m in CLOSED_2026 else f"AdjFC_{m}_2026")
+
+    def _v27(df, m):
+        return _col_sum(df, f"AdjFC_{m}_2027")
+
+    def _growth(new, base):
+        return (new - base) / base * 100 if base else None
+
+    def _tag26(m):
+        return '(A)' if m in CLOSED_2026 else '(F)'
 
     # Fill string columns that might have NaN
     for col in ["Sub_Brand_Description", "Brand_Family", "Category_Grouper_Description_Z"]:
@@ -547,18 +588,17 @@ def build_prework_pdf(
         ('TOPPADDING',    (0, 0), (-1, -1), 6),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
     ]))
-    # Cover — key at-a-glance metrics
+    # Cover — key at-a-glance metrics: the 2027 plan against the 2026 run-rate
     ytd_total   = ca["_YTD_2026"].sum() if not ca.empty else 0
-    fc_cols_all = [f"AdjFC_{m}_2026" for m in OPEN_2026 if f"AdjFC_{m}_2026" in ca.columns]
-    h2_total    = ca[fc_cols_all].sum().sum() if fc_cols_all and not ca.empty else 0
-    act25_total = _col_sum(ca, "Actual_Total_2025") if not ca.empty else 0
+    fy26_total  = ca["_FY_2026"].sum()  if not ca.empty else 0
+    fy27_total  = ca["_FY_2027"].sum()  if not ca.empty else 0
     n_skus      = ca["Material_Number"].nunique() if "Material_Number" in ca.columns and not ca.empty else 0
     n_customers = ca["Customer_Number"].nunique() if "Customer_Number" in ca.columns and not ca.empty else 0
     region      = sub_segment.split()[0]  # "APAC" or "EMEA"
 
-    kpi_labels = ['2026 YTD Actuals (9LC)', 'H2 2026 AdjFC (9LC)',
-                  '2025 Full Year (9LC)', 'Active SKUs', 'Active Customers']
-    kpi_values = [_fmt(ytd_total), _fmt(h2_total), _fmt(act25_total),
+    kpi_labels = ['2027 AdjFC Full Year (9LC)', '2026 Full Year A+F (9LC)',
+                  '2027 vs 2026', 'Active SKUs', 'Active Customers']
+    kpi_values = [_fmt(fy27_total), _fmt(fy26_total), _pct(_growth(fy27_total, fy26_total)),
                   f"{n_skus:,}", f"{n_customers:,}"]
     _kl = ParagraphStyle('kl', fontName='Helvetica', fontSize=8, textColor=GREY,
                          alignment=TA_CENTER, leading=11)
@@ -589,16 +629,16 @@ def build_prework_pdf(
                                 textColor=NAVY, leading=16, leftIndent=10)
     sections_left = [
         ('1', 'Introduction & Key Metrics'),
-        ('2', 'Confirmed Orders vs Adjusted Forecast'),
+        ('2', '2027 Adjusted Forecast vs 2026 — Market Monthly View'),
         ('3', 'Forecast Accuracy — IBP n-3'),
-        ('4', 'Monthly Year-on-Year Comparison'),
+        ('4', 'Monthly Volume — 2027 vs 2026'),
     ]
     sections_right = [
-        ('5', 'Deviation Flags — Top 5 Sub-Brands'),
+        ('5', 'Deviation Flags — Top 5 Sub-Brands, 2027 vs 2026'),
         ('6', 'Category & Brand Family Sanity Check'),
-        ('B', 'Appendix B — Monthly Historical Sales'),
-        ('C', 'Appendix C — Top-10 Product Rankings'),
-        ('D', 'Appendix D — Category & Brand Family Breakdown'),
+        ('B', 'Appendix B — Monthly History & 2027 Plan'),
+        ('C', 'Appendix C — Top-10 Sub-Brand Rankings'),
+        ('D', 'Appendix D — Category & Brand Family, 2027 vs 2026'),
     ]
     def _sec_rows(items):
         return [[Paragraph(f'<b>{n}.</b>', _sec_bold), Paragraph(t, _sec_style)]
@@ -650,12 +690,13 @@ def build_prework_pdf(
             f'This document prepares the <b>Pre-Alignment Meeting</b> for '
             f'<b>{country} {sub_segment}</b> — <b>{cycle} forecast cycle</b>. '
             f'Exception-based review covering:', ST['body']),
-        bul('Confirmed Sales Orders vs Adjusted Forecast — remaining open months'),
+        bul('2027 Adjusted Forecast vs the 2026 run-rate (actuals + AdjFC) — market monthly view'),
+        bul('Confirmed Sales Orders vs Adjusted Forecast — remaining open months of 2026'),
         bul('Forecast Accuracy (IBP n-3) — wMAPE &amp; Bias across all closed 2026 months'),
         bul('Top-10 Product Performance — last closed month'),
-        bul('Monthly Year-on-Year Comparison — 2026 vs 2025'),
-        bul('Deviation Flags — Top 5 Sub-Brands'),
-        bul('Category &amp; Brand Family Sanity Check'),
+        bul('Monthly Volume — 2027 AdjFC vs 2026'),
+        bul('Deviation Flags — Top 5 Sub-Brands, 2027 vs 2026 by month'),
+        bul('Category &amp; Brand Family Sanity Check — 2027 vs 2026'),
         sp(8),
     ]
     story += callout([
@@ -665,98 +706,66 @@ def build_prework_pdf(
          '|  Bias &lt; 0 → under-forecast  |  Target = 0%', 'box'),
     ], bg=LBLUE)
 
-    # ══ SECTION 2 — CONFIRMED ORDERS vs ADJ FORECAST ═════════════════════════
-    story += [sp(6)] + section_hdr('2   CONFIRMED ORDERS vs ADJUSTED FORECAST')
+    # ══ SECTION 2 — 2027 ADJUSTED FORECAST vs 2026 ═══════════════════════════
+    story += [sp(6)] + section_hdr('2   2027 ADJUSTED FORECAST vs 2026 — MARKET MONTHLY VIEW')
     story += [
         Paragraph(
-            'Confirmed Sales Orders (SO) are actual customer orders already booked in the system '
-            'for the remaining open months of 2026. Compared against the Adjusted Forecast (AdjFC) '
-            'to identify demand/supply alignment. '
-            '<b>SO &gt; AdjFC</b> = demand exceeding plan. '
-            '<b>SO &lt;&lt; AdjFC</b> = risk of shortfall.',
+            'The full-year 2027 Adjusted Forecast (AdjFC), month by month, against the 2026 '
+            'run-rate: confirmed actuals for the closed months '
+            f'(Jan–{LAST_CLOSED or "—"}) and the Adjusted Forecast for the months still open '
+            f'({OPEN_2026[0] if OPEN_2026 else "—"}–Dec). '
+            '<b>YoY %</b> is 2027 against the same month of 2026.',
             ST['body']),
         sp(4),
     ]
 
-    so_cols = [f"SO_{m}_2026"    for m in OPEN_2026 if f"SO_{m}_2026"    in ca.columns]
     fc_cols = [f"AdjFC_{m}_2026" for m in OPEN_2026 if f"AdjFC_{m}_2026" in ca.columns]
-    open_ms_avail = [m for m in OPEN_2026 if f"AdjFC_{m}_2026" in ca.columns]
 
     if not ca.empty:
-        # ── Market-level monthly summary (Jan–Dec, like Aera view) ───────────
-        story.append(Paragraph('Market Monthly View — Full Year 2026', ST['sub']))
+        # ── Market-level monthly summary (Jan–Dec, like the Aera view) ───────
+        story.append(Paragraph('Market Monthly View — 2027 AdjFC vs 2026 (A+F)', ST['sub']))
         story.append(Paragraph(
-            '(A) = closed month actual  ·  (F) = open month Adjusted Forecast  ·  SO = confirmed sales orders',
+            '(A) = closed 2026 month, actual  ·  (F) = open 2026 month, Adjusted Forecast  ·  '
+            'every 2027 month is forecast',
             ST['source']))
 
         lbl_w  = 2.4 * cm
-        ytd_w  = 1.7 * cm
-        m_w    = (W - lbl_w - ytd_w) / 12
+        fy_w   = 1.7 * cm
+        m_w    = (W - lbl_w - fy_w) / 12
 
-        # Header row — mark closed vs open months
+        # Header row — mark closed vs open 2026 months
         def _mhdr(m):
-            tag = '(A)' if m in CLOSED_2026 else '(F)'
-            return Paragraph(f'<b>{m}</b><br/><font size="5">{tag}</font>', ST['tblH'])
+            return Paragraph(f'<b>{m}</b><br/><font size="5">{_tag26(m)}</font>', ST['tblH'])
 
         mkt_hdrs_row = (
             [Paragraph('<b>Metric</b>', ST['tblH'])] +
             [_mhdr(m) for m in _ALL_MONTHS] +
-            [Paragraph('<b>YTD</b>', ST['tblH'])]
+            [Paragraph('<b>FY</b>', ST['tblH'])]
         )
 
-        def _mkt_val(m):
-            if m in CLOSED_2026:
-                return _col_sum(ca, f"Actual_{m}_2026")
-            col = f"AdjFC_{m}_2026"
-            return _col_sum(ca, col) if col in ca.columns else 0
-
-        def _so_val(m):
-            if m in CLOSED_2026:
-                return _col_sum(ca, f"Actual_{m}_2026")
-            col = f"SO_{m}_2026"
-            return _col_sum(ca, col) if col in ca.columns else 0
-
-        def _a25_val(m):
-            col = f"Actual_{m}_2025"
-            return _col_sum(ca, col) if col in ca.columns else 0
-
-        act_fc_vals = [_mkt_val(m) for m in _ALL_MONTHS]
-        so_vals     = [_so_val(m)  for m in _ALL_MONTHS]
-        a25_vals    = [_a25_val(m) for m in _ALL_MONTHS]
-
-        ytd_actfc = sum(_mkt_val(m) for m in CLOSED_2026)
-        ytd_so    = sum(_so_val(m)  for m in CLOSED_2026)
-        ytd_a25   = sum(_a25_val(m) for m in CLOSED_2026)
-
-        def _yoy(v26, v25):
-            if v25 == 0:
-                return '—'
-            pct = (v26 - v25) / v25 * 100
-            return f'{pct:+.1f}%'
-
-        yoy_vals = [_yoy(act_fc_vals[i], a25_vals[i]) for i in range(12)]
-        ytd_yoy  = _yoy(ytd_actfc, ytd_a25)
+        v27_vals = [_v27(ca, m) for m in _ALL_MONTHS]
+        v26_vals = [_v26(ca, m) for m in _ALL_MONTHS]
+        fy27     = sum(v27_vals)
+        fy26     = sum(v26_vals)
+        yoy_vals = [_pct(_growth(a, b)) for a, b in zip(v27_vals, v26_vals)]
+        fy_yoy   = _pct(_growth(fy27, fy26))
 
         mkt_data = [
             mkt_hdrs_row,
-            ([Paragraph('AdjFC / Actuals', ST['tblL'])] +
-             [Paragraph(_fmt(v), ST['tblR']) for v in act_fc_vals] +
-             [Paragraph(_fmt(ytd_actfc), ST['tblR'])]),
-            ([Paragraph('Confirmed SO', ST['tblL'])] +
-             [Paragraph(_fmt(v), ST['tblR']) for v in so_vals] +
-             [Paragraph(_fmt(ytd_so), ST['tblR'])]),
-            ([Paragraph('2025 Actuals', ST['tblL'])] +
-             [Paragraph(_fmt(v), ST['tblR']) for v in a25_vals] +
-             [Paragraph(_fmt(ytd_a25), ST['tblR'])]),
+            ([Paragraph('2027 AdjFC', ST['tblL'])] +
+             [Paragraph(_fmt(v), ST['tblR']) for v in v27_vals] +
+             [Paragraph(_fmt(fy27), ST['tblR'])]),
+            ([Paragraph('2026 Act / FC', ST['tblL'])] +
+             [Paragraph(_fmt(v), ST['tblR']) for v in v26_vals] +
+             [Paragraph(_fmt(fy26), ST['tblR'])]),
             ([Paragraph('YoY %', ST['tblL'])] +
              [Paragraph(v, ST['tblR']) for v in yoy_vals] +
-             [Paragraph(ytd_yoy, ST['tblR'])]),
+             [Paragraph(fy_yoy, ST['tblR'])]),
         ]
 
-        cw_mkt = [lbl_w] + [m_w] * 12 + [ytd_w]
+        cw_mkt = [lbl_w] + [m_w] * 12 + [fy_w]
         mkt_tbl = Table(mkt_data, colWidths=cw_mkt, repeatRows=1)
-        _closed_idx = [i + 1 for i, m in enumerate(_ALL_MONTHS) if m in CLOSED_2026]
-        _open_idx   = [i + 1 for i, m in enumerate(_ALL_MONTHS) if m not in CLOSED_2026]
+        _open_idx = [i + 1 for i, m in enumerate(_ALL_MONTHS) if m not in CLOSED_2026]
         mkt_style = [
             ('BACKGROUND',   (0, 0),  (-1, 0),   NAVY),
             ('TEXTCOLOR',    (0, 0),  (-1, 0),   WHITE),
@@ -772,26 +781,63 @@ def build_prework_pdf(
             ('BOTTOMPADDING',(0, 0),  (-1, -1),  3),
             ('LEFTPADDING',  (0, 0),  (-1, -1),  2),
             ('RIGHTPADDING', (0, 0),  (-1, -1),  2),
-            # YoY row — last row, italic grey
-            ('TEXTCOLOR',    (0, 4),  (-1, 4),   GREY),
-            # Shade closed months slightly
+            # YoY row — last row, grey
+            ('TEXTCOLOR',    (0, 3),  (-1, 3),   GREY),
             ('BACKGROUND',   (0, 1),  (0, -1),   colors.HexColor('#EEF2F8')),
         ]
-        # Highlight open month SO cols (may show 0 — flag visually)
+        # The open 2026 months are forecast against forecast — mark them
         for col_i in _open_idx:
             mkt_style.append(('TEXTCOLOR', (col_i, 2), (col_i, 2), colors.HexColor('#888888')))
         mkt_tbl.setStyle(TableStyle(mkt_style))
         story += [mkt_tbl, sp(10)]
 
-        if gpt_client and fc_cols:
-            _h2_fc  = sum(_mkt_val(m) for m in OPEN_2026)
-            _h2_so  = sum(_so_val(m)  for m in OPEN_2026)
-            _h2_cov = (_h2_so / _h2_fc * 100) if _h2_fc > 0 else 0
+        # ── Remaining open months of 2026 — confirmed orders vs the forecast ──
+        # Confirmed orders exist only a couple of months out, so this is the one
+        # place the document still looks at 2026 on its own: the months the
+        # cycle can still land.
+        so_rows = []
+        for m in OPEN_2026:
+            if f"AdjFC_{m}_2026" not in ca.columns:
+                continue
+            fc_v = _col_sum(ca, f"AdjFC_{m}_2026")
+            so_v = _col_sum(ca, f"SO_{m}_2026")
+            cov  = f"{so_v / fc_v * 100:.1f}%" if fc_v > 0 else '—'
+            so_rows.append([f"{m} 2026", _fmt(fc_v), _fmt(so_v), _fmt(so_v - fc_v), cov])
+        _open_fc = sum(_col_sum(ca, f"AdjFC_{m}_2026") for m in OPEN_2026)
+        _open_so = sum(_col_sum(ca, f"SO_{m}_2026")    for m in OPEN_2026)
+        _open_cov = (_open_so / _open_fc * 100) if _open_fc > 0 else 0
+        if so_rows:
+            so_rows.append(['TOTAL', _fmt(_open_fc), _fmt(_open_so),
+                            _fmt(_open_so - _open_fc),
+                            f"{_open_cov:.1f}%" if _open_fc > 0 else '—'])
+            story.append(Paragraph(
+                '2.1  Confirmed Orders vs Adjusted Forecast — remaining open months of 2026',
+                ST['sub']))
+            story.append(Paragraph(
+                'Confirmed Sales Orders (SO) are customer orders already booked for the 2026 '
+                'months still open. <b>SO &gt; AdjFC</b> = demand exceeding plan. '
+                '<b>SO &lt;&lt; AdjFC</b> = risk of shortfall, or orders not yet placed.',
+                ST['body']))
+            story += dtbl(
+                ['Month', 'AdjFC (9LC)', 'Confirmed SO (9LC)', 'SO − AdjFC', 'SO coverage'],
+                so_rows,
+                [3.0*cm, 3.2*cm, 3.6*cm, 3.0*cm, 2.8*cm],
+                center_from=1,
+            )
+
+        if gpt_client:
             commentary = _gpt(
                 f"Market: {country} {sub_segment}. "
-                f"YTD 2026 Actuals: {ytd_actfc:,.0f} 9LC vs {ytd_a25:,.0f} 9LC in 2025 ({ytd_yoy} YoY). "
-                f"H2 AdjFC: {_h2_fc:,.0f} 9LC. SO confirmed: {_h2_so:,.0f} 9LC ({_h2_cov:.1f}% coverage). "
-                f"Write 2-3 sentences of analyst insight on the full-year position and H2 SO coverage risk.",
+                f"FY 2027 AdjFC: {fy27:,.0f} 9LC vs FY 2026 run-rate (actuals + AdjFC): "
+                f"{fy26:,.0f} 9LC ({fy_yoy} YoY). "
+                f"2026 YTD actuals Jan–{LAST_CLOSED or '—'}: {ytd_total:,.0f} 9LC. "
+                f"Monthly 2027 vs 2026 YoY: "
+                f"{', '.join(f'{m} {y}' for m, y in zip(_ALL_MONTHS, yoy_vals))}. "
+                f"Open 2026 months ({', '.join(OPEN_2026) or 'none'}): AdjFC {_open_fc:,.0f} 9LC, "
+                f"SO confirmed {_open_so:,.0f} 9LC ({_open_cov:.1f}% coverage). "
+                f"Write 2-3 sentences of analyst insight on the 2027 plan against the 2026 "
+                f"run-rate — call out any month where the phasing diverges — and on the SO "
+                f"coverage risk for the rest of 2026.",
                 gpt_client,
             )
             if commentary:
@@ -1171,90 +1217,85 @@ def build_prework_pdf(
 
     story.append(PageBreak())
 
-    # ══ SECTION 5 — MONTHLY YoY COMPARISON ════════════════════════════════════
-    story += section_hdr('5   MONTHLY VOLUME — 2026 vs 2025')
+    # ══ SECTION 5 — MONTHLY VOLUME 2027 vs 2026 ═══════════════════════════════
+    story += section_hdr('5   MONTHLY VOLUME — 2027 vs 2026')
     story += [
         Paragraph(
+            '2027: Adjusted Forecast for every month. '
             f'2026: actuals for closed months (Jan–{LAST_CLOSED or "—"}), '
             f'Adjusted Forecast for open months '
-            f'({OPEN_2026[0] if OPEN_2026 else "—"}–Dec). '
-            'Compared against 2025 actuals. (A) = Actual, (F) = Forecast.',
+            f'({OPEN_2026[0] if OPEN_2026 else "—"}–Dec); '
+            '(A) / (F) marks which the 2026 month is. Delta and YoY % are 2027 against 2026.',
             ST['body']),
         sp(4),
     ]
 
     s5_rows = []
     for m in _ALL_MONTHS:
-        if m in CLOSED_2026:
-            col26 = f"Actual_{m}_2026"
-            tag   = '(A)'
-        else:
-            col26 = f"AdjFC_{m}_2026"
-            tag   = '(F)'
-        col25 = f"Actual_{m}_2025"
-        v26   = _col_sum(ca, col26)
-        v25   = _col_sum(ca, col25)
-        yoy   = (v26 - v25) / v25 * 100 if v25 > 0 else None
-        s5_rows.append([f"{m} {tag}", _fmt(v25), _fmt(v26), _pct(yoy)])
+        v26 = _v26(ca, m)
+        v27 = _v27(ca, m)
+        s5_rows.append([f"{m} {_tag26(m)}", _fmt(v26), _fmt(v27),
+                        _fmt(v27 - v26), _pct(_growth(v27, v26))])
 
-    tot25 = sum(_col_sum(ca, f"Actual_{m}_2025") for m in _ALL_MONTHS)
-    tot26 = sum(
-        _col_sum(ca, f"Actual_{m}_2026" if m in CLOSED_2026 else f"AdjFC_{m}_2026")
-        for m in _ALL_MONTHS
-    )
-    s5_rows.append(['TOTAL', _fmt(tot25), _fmt(tot26),
-                     _pct((tot26 - tot25) / tot25 * 100 if tot25 > 0 else None)])
+    tot26 = sum(_v26(ca, m) for m in _ALL_MONTHS)
+    tot27 = sum(_v27(ca, m) for m in _ALL_MONTHS)
+    s5_rows.append(['TOTAL', _fmt(tot26), _fmt(tot27),
+                    _fmt(tot27 - tot26), _pct(_growth(tot27, tot26))])
 
     story += dtbl(
-        ['Month', '2025 Actuals', '2026 Act/FC', 'YoY %'],
+        ['Month', '2026 Act/FC', '2027 AdjFC', 'Delta (9LC)', 'YoY %'],
         s5_rows,
-        [3.2*cm, 4.0*cm, 4.0*cm, 4.0*cm],
+        [3.0*cm, 3.4*cm, 3.4*cm, 3.2*cm, 2.6*cm],
         center_from=1,
     )
 
     # ══ SECTION 5.3 — DEVIATION FLAGS (TOP 5 SUB-BRANDS) ═════════════════════
-    story += [sp(6)] + section_hdr('5.3   DEVIATION FLAGS — TOP 5 SUB-BRANDS')
+    story += [sp(6)] + section_hdr('5.3   DEVIATION FLAGS — TOP 5 SUB-BRANDS, 2027 vs 2026')
     story += [
         Paragraph(
-            'Top 5 sub-brands by 2026 YTD actual sales. '
-            'For each: Adjusted Forecast, Confirmed Sales Orders (SO), and 2025 Actuals '
-            'for all remaining open months.',
+            'Top 5 sub-brands by 2026 full-year volume (actuals + AdjFC). For each: the 2027 '
+            'Adjusted Forecast by month against the same month of 2026, and the YoY %. '
+            f'2026 months after {LAST_CLOSED or "—"} are forecast, not actual. '
+            'A month whose YoY % sits far from the sub-brand\'s full-year figure is a '
+            'phasing question for the meeting.',
             ST['body']),
         sp(4),
     ]
 
-    if not ca.empty and OPEN_2026:
-        brand_ytd = ca.groupby("Sub_Brand_Description")["_YTD_2026"].sum()
-        top5 = brand_ytd.nlargest(5).index.tolist()
-        n_open = len(OPEN_2026)
-        brand_col_w = 3.5*cm
-        month_col_w = (W - brand_col_w) / max(n_open, 1)
-        dev_cw = [brand_col_w] + [month_col_w] * n_open
+    if not ca.empty:
+        top5 = ca.groupby("Sub_Brand_Description")["_FY_2026"].sum().nlargest(5).index.tolist()
+        brand_col_w = 2.2*cm
+        fy_col_w    = 1.6*cm
+        month_col_w = (W - brand_col_w - fy_col_w) / 12
+        dev_cw   = [brand_col_w] + [month_col_w] * 12 + [fy_col_w]
+        dev_hdrs = ['Metric'] + _ALL_MONTHS + ['FY']
 
+        brand_summary = []
         for brand in top5:
-            story.append(Paragraph(f'<b>{escape(str(brand))}</b>', ST['sub']))
             bdf = ca[ca["Sub_Brand_Description"] == brand]
+            b27 = [_v27(bdf, m) for m in _ALL_MONTHS]
+            b26 = [_v26(bdf, m) for m in _ALL_MONTHS]
+            t27, t26 = sum(b27), sum(b26)
+            rows = [
+                ['2027 AdjFC']  + [_fmt(v) for v in b27] + [_fmt(t27)],
+                ['2026 Act/FC'] + [_fmt(v) for v in b26] + [_fmt(t26)],
+                ['YoY %'] + [_pct(_growth(a, b)) for a, b in zip(b27, b26)]
+                          + [_pct(_growth(t27, t26))],
+            ]
+            # Three rows plus a title: keep each sub-brand on one page rather
+            # than letting its YoY row drift to the next.
+            story.append(KeepTogether(
+                [Paragraph(f'<b>{escape(str(brand))}</b>', ST['sub'])]
+                + dtbl(dev_hdrs, rows, dev_cw, font_size=7, pad=2)))
+            brand_summary.append(
+                f"{brand}: FY2026 {t26:,.0f}, FY2027 AdjFC {t27:,.0f} ({_pct(_growth(t27, t26))})")
 
-            fc_row  = ['AdjFC 2026']
-            so_row  = ['SO 2026']
-            a25_row = ['Actuals 2025']
-            for m in OPEN_2026:
-                fc_row.append( _fmt(_col_sum(bdf, f"AdjFC_{m}_2026")))
-                so_row.append( _fmt(_col_sum(bdf, f"SO_{m}_2026")))
-                a25_row.append(_fmt(_col_sum(bdf, f"Actual_{m}_2025")))
-
-            story += dtbl(
-                ['Metric'] + OPEN_2026,
-                [fc_row, so_row, a25_row],
-                dev_cw,
-            )
-
-        if gpt_client:
+        if gpt_client and brand_summary:
             commentary = _gpt(
-                f"Market: {country} {sub_segment}. "
-                f"Reviewing AdjFC vs confirmed SO vs 2025 actuals for the top 5 sub-brands "
-                f"across the open months {', '.join(OPEN_2026)}. "
-                f"Write 2-3 sentences on key risks or signals to watch in the upcoming months.",
+                f"Market: {country} {sub_segment}. Top 5 sub-brands, 2027 AdjFC against the "
+                f"2026 run-rate (actuals + AdjFC), 9LC: " + "; ".join(brand_summary) + ". "
+                f"Write 2-3 sentences on which sub-brands carry the 2027 growth or decline "
+                f"and what to challenge in the pre-alignment meeting.",
                 gpt_client,
             )
             if commentary:
@@ -1264,57 +1305,44 @@ def build_prework_pdf(
     story.append(PageBreak())
 
     # ══ SECTION 5.6 — CATEGORY SANITY CHECK ══════════════════════════════════
-    story += section_hdr('5.6   CATEGORY SANITY CHECK')
+    story += section_hdr('5.6   CATEGORY SANITY CHECK — 2027 vs 2026')
     story += [
         Paragraph(
-            '2024 actuals, 2025 actuals, 2026 combined (actuals + AdjFC), '
-            '2027 full-year AdjFC — by Category. YoY growth % for each transition.',
+            '2025 actuals, the 2026 run-rate (actuals + AdjFC) and the 2027 full-year AdjFC '
+            'by Category, with the growth % of each step. Sorted by 2027 AdjFC.',
             ST['body']),
         sp(4),
     ]
 
     if not ca.empty:
-        cat_grp = ca.groupby("Category_Grouper_Description_Z").agg({
-            c: "sum" for c in
-            ["Actual_Total_2024", "Actual_Total_2025", "Total_2026", "AdjFC_Total_2027"]
-            if c in ca.columns
-        }).reset_index().rename(columns={"Category_Grouper_Description_Z": "Category"})
-
-        for col in ["Actual_Total_2024", "Actual_Total_2025", "Total_2026", "AdjFC_Total_2027"]:
-            if col not in cat_grp.columns:
-                cat_grp[col] = 0.0
-
-        cat_grp["26vs25"] = ((cat_grp["Total_2026"] - cat_grp["Actual_Total_2025"]) /
-                              cat_grp["Actual_Total_2025"].replace(0, np.nan) * 100)
-        cat_grp["27vs26"] = ((cat_grp["AdjFC_Total_2027"] - cat_grp["Total_2026"]) /
-                              cat_grp["Total_2026"].replace(0, np.nan) * 100)
-        cat_grp = cat_grp.sort_values("Total_2026", ascending=False)
+        _cat = ca[["Category_Grouper_Description_Z", "_FY_2026", "_FY_2027"]].copy()
+        _cat["_A25"] = ca["Actual_Total_2025"] if "Actual_Total_2025" in ca.columns else 0.0
+        cat_grp = (_cat.groupby("Category_Grouper_Description_Z")[["_A25", "_FY_2026", "_FY_2027"]]
+                       .sum().reset_index()
+                       .rename(columns={"Category_Grouper_Description_Z": "Category"}))
+        cat_grp = cat_grp.sort_values("_FY_2027", ascending=False)
 
         cat_rows = []
         for _, r in cat_grp.iterrows():
             cat_rows.append([
                 r["Category"],
-                _fmt(r["Actual_Total_2024"]),
-                _fmt(r["Actual_Total_2025"]),
-                _fmt(r["Total_2026"]),
-                _pct(r["26vs25"]),
-                _fmt(r["AdjFC_Total_2027"]),
-                _pct(r["27vs26"]),
+                _fmt(r["_A25"]),
+                _fmt(r["_FY_2026"]),
+                _pct(_growth(r["_FY_2026"], r["_A25"])),
+                _fmt(r["_FY_2027"]),
+                _pct(_growth(r["_FY_2027"], r["_FY_2026"])),
             ])
-        tot24 = cat_grp["Actual_Total_2024"].sum()
-        tot25 = cat_grp["Actual_Total_2025"].sum()
-        tot26 = cat_grp["Total_2026"].sum()
-        tot27 = cat_grp["AdjFC_Total_2027"].sum()
+        tot25 = cat_grp["_A25"].sum()
+        tot26 = cat_grp["_FY_2026"].sum()
+        tot27 = cat_grp["_FY_2027"].sum()
         cat_rows.append([
-            'TOTAL', _fmt(tot24), _fmt(tot25), _fmt(tot26),
-            _pct((tot26-tot25)/tot25*100 if tot25 > 0 else None),
-            _fmt(tot27),
-            _pct((tot27-tot26)/tot26*100 if tot26 > 0 else None),
+            'TOTAL', _fmt(tot25), _fmt(tot26), _pct(_growth(tot26, tot25)),
+            _fmt(tot27), _pct(_growth(tot27, tot26)),
         ])
         story += dtbl(
-            ['Category', '2024 Act', '2025 Act', '2026 (A+F)', '26 vs 25', '2027 AdjFC', '27 vs 26'],
+            ['Category', '2025 Act', '2026 (A+F)', '26 vs 25', '2027 AdjFC', '27 vs 26'],
             cat_rows,
-            [4.0*cm, 1.8*cm, 1.8*cm, 2.0*cm, 1.8*cm, 2.2*cm, 1.9*cm],
+            [5.0*cm, 2.3*cm, 2.3*cm, 2.0*cm, 2.4*cm, 2.0*cm],
         )
 
         # Quarterly growth 2027 vs 2026
@@ -1324,16 +1352,13 @@ def build_prework_pdf(
         qtr_rows = []
         fy26 = fy27 = 0
         for qtr, months in qtr_map.items():
-            q26 = sum(_col_sum(ca, f"Actual_{m}_2026" if m in CLOSED_2026 else f"AdjFC_{m}_2026")
-                      for m in months)
-            q27 = sum(_col_sum(ca, f"AdjFC_{m}_2027") for m in months)
+            q26 = sum(_v26(ca, m) for m in months)
+            q27 = sum(_v27(ca, m) for m in months)
             fy26 += q26
             fy27 += q27
-            pct = (q27 - q26) / q26 * 100 if q26 > 0 else None
-            qtr_rows.append([qtr, _fmt(q26), _fmt(q27), _fmt(q27 - q26), _pct(pct)])
-        fy_pct = (fy27 - fy26) / fy26 * 100 if fy26 > 0 else None
+            qtr_rows.append([qtr, _fmt(q26), _fmt(q27), _fmt(q27 - q26), _pct(_growth(q27, q26))])
         qtr_rows.append(['TOTAL (Full Year)', _fmt(fy26), _fmt(fy27),
-                          _fmt(fy27 - fy26), _pct(fy_pct)])
+                          _fmt(fy27 - fy26), _pct(_growth(fy27, fy26))])
         story += dtbl(
             ['Quarter', '2026 (9LC)', '2027 AdjFC (9LC)', 'Delta', 'Growth %'],
             qtr_rows,
@@ -1343,20 +1368,23 @@ def build_prework_pdf(
 
     story.append(PageBreak())
 
-    # ══ APPENDIX B — MONTHLY HISTORICAL (TOP 3 SUB-BRANDS) ═══════════════════
-    story += section_hdr('APPENDIX B   MONTHLY HISTORICAL — TOP 3 SUB-BRANDS')
+    # ══ APPENDIX B — MONTHLY HISTORY AND 2027 PLAN (TOP 3 SUB-BRANDS) ════════
+    story += section_hdr('APPENDIX B   MONTHLY HISTORY AND 2027 PLAN — TOP 3 SUB-BRANDS')
     story += [
         Paragraph(
-            'Monthly order history for the top 3 sub-brands by 2026 YTD volume. '
-            '(A) = confirmed actuals. 2026 shows actuals for closed months only.',
+            'Monthly volume for the top 3 sub-brands by 2026 full-year volume. '
+            '2024 and 2025 are confirmed actuals; 2026 is actuals for the closed months '
+            f'(Jan–{LAST_CLOSED or "—"}) and the Adjusted Forecast for the open months; '
+            '2027 is the Adjusted Forecast.',
             ST['body']),
         sp(4),
     ]
 
     if not ca.empty:
-        top3 = ca.groupby("Sub_Brand_Description")["_YTD_2026"].sum().nlargest(3).index.tolist()
+        top3 = ca.groupby("Sub_Brand_Description")["_FY_2026"].sum().nlargest(3).index.tolist()
         hist_hdrs = ['Year'] + _ALL_MONTHS + ['Total']
-        hist_cw   = [1.0*cm] + [1.25*cm]*12 + [1.45*cm]
+        _yr_w, _tot_w = 1.7*cm, 1.45*cm
+        hist_cw   = [_yr_w] + [(W - _yr_w - _tot_w) / 12]*12 + [_tot_w]
 
         for brand in top3:
             story.append(Paragraph(f'<b>{escape(str(brand))}</b>', ST['sub']))
@@ -1364,125 +1392,109 @@ def build_prework_pdf(
             hist_rows = []
 
             for yr, tot_col in [('2024', 'Actual_Total_2024'), ('2025', 'Actual_Total_2025')]:
-                row = [yr]
+                row = [f'{yr} (A)']
                 for m in _ALL_MONTHS:
                     row.append(_fmt(_col_sum(bdf, f"Actual_{m}_{yr}")))
                 row.append(_fmt(_col_sum(bdf, tot_col)))
                 hist_rows.append(row)
 
-            row26 = ['2026 (A)']
-            for m in _ALL_MONTHS:
-                row26.append(_fmt(_col_sum(bdf, f"Actual_{m}_2026")) if m in CLOSED_2026 else '—')
-            row26.append(_fmt(bdf["_YTD_2026"].sum()))
+            row26 = ['2026 (A+F)'] + [_fmt(_v26(bdf, m)) for m in _ALL_MONTHS]
+            row26.append(_fmt(sum(_v26(bdf, m) for m in _ALL_MONTHS)))
             hist_rows.append(row26)
 
-            story += dtbl(hist_hdrs, hist_rows, hist_cw, font_size=7.5)
+            row27 = ['2027 (F)'] + [_fmt(_v27(bdf, m)) for m in _ALL_MONTHS]
+            row27.append(_fmt(sum(_v27(bdf, m) for m in _ALL_MONTHS)))
+            hist_rows.append(row27)
+
+            story += dtbl(hist_hdrs, hist_rows, hist_cw, font_size=7.5, pad=2)
 
     story.append(PageBreak())
 
-    # ══ APPENDIX C — TOP-10 PRODUCT RANKINGS ═════════════════════════════════
-    story += section_hdr('APPENDIX C   TOP-10 PRODUCT RANKINGS')
+    # ══ APPENDIX C — TOP-10 SUB-BRAND RANKINGS ═══════════════════════════════
+    story += section_hdr('APPENDIX C   TOP-10 SUB-BRAND RANKINGS — 2027 vs 2026')
 
     if not ca.empty:
-        # YTD 2025 = same closed months as 2026 YTD (apples-to-apples comparison)
-        ytd25_cols = [f"Actual_{m}_2025" for m in CLOSED_2026 if f"Actual_{m}_2025" in ca.columns]
-        ca_r = ca.copy()
-        ca_r["_YTD_2025"] = ca_r[ytd25_cols].sum(axis=1) if ytd25_cols else 0.0
-
-        rank_grp = ca_r.groupby("Sub_Brand_Description").agg(
-            Vol_2026=("_YTD_2026", "sum"),
-            Vol_2025=("_YTD_2025", "sum"),
-            Vol_2025_Full=("Actual_Total_2025", "sum") if "Actual_Total_2025" in ca_r.columns
-                          else ("_YTD_2026", "count"),
+        rank_grp = ca.groupby("Sub_Brand_Description").agg(
+            FY26=("_FY_2026", "sum"),
+            FY27=("_FY_2027", "sum"),
         ).reset_index()
+        rank_grp["YoY"] = (rank_grp["FY27"] - rank_grp["FY26"]) / rank_grp["FY26"].replace(0, np.nan) * 100
 
-        if "Actual_Total_2025" not in ca_r.columns:
-            rank_grp["Vol_2025_Full"] = 0
+        # Ranked on the 2027 plan
+        story.append(Paragraph('Top-10 Sub-Brands by 2027 Adjusted Forecast', ST['sub']))
+        rank27 = rank_grp.nlargest(10, "FY27").reset_index(drop=True)
+        rank27["Rank"] = range(1, len(rank27)+1)
+        r27_rows = [
+            [r["Rank"], r["Sub_Brand_Description"],
+             _fmt(r["FY27"]), _fmt(r["FY26"]), _pct(r["YoY"])]
+            for _, r in rank27.iterrows()
+        ]
+        story += dtbl(
+            ['Rank', 'Sub-Brand', '2027 AdjFC (9LC)', '2026 A+F (9LC)', 'YoY %'],
+            r27_rows,
+            [1.4*cm, 5.6*cm, 3.4*cm, 3.4*cm, 1.8*cm],
+            center_from=2,
+        )
 
-        ytd_label = f"Jan–{LAST_CLOSED} 2025" if LAST_CLOSED else "2025 YTD"
-
-        # 2026 YTD ranking
-        story.append(Paragraph('Top-10 Sub-Brands by 2026 YTD Actual Volume', ST['sub']))
-        rank26 = rank_grp.nlargest(10, "Vol_2026").reset_index(drop=True)
+        # Ranked on the 2026 run-rate — shows what the plan drops or lifts
+        story.append(Paragraph('Top-10 Sub-Brands by 2026 Full Year Volume (A+F)', ST['sub']))
+        rank26 = rank_grp.nlargest(10, "FY26").reset_index(drop=True)
         rank26["Rank"] = range(1, len(rank26)+1)
-        rank26["YoY%"] = ((rank26["Vol_2026"] - rank26["Vol_2025"]) /
-                           rank26["Vol_2025"].replace(0, np.nan) * 100)
         r26_rows = [
             [r["Rank"], r["Sub_Brand_Description"],
-             _fmt(r["Vol_2026"]), _fmt(r["Vol_2025"]), _pct(r["YoY%"])]
+             _fmt(r["FY26"]), _fmt(r["FY27"]), _pct(r["YoY"])]
             for _, r in rank26.iterrows()
         ]
         story += dtbl(
-            ['Rank', 'Sub-Brand', '2026 YTD (9LC)', f'{ytd_label} (9LC)', 'YoY %'],
+            ['Rank', 'Sub-Brand', '2026 A+F (9LC)', '2027 AdjFC (9LC)', 'YoY %'],
             r26_rows,
-            [1.0*cm, 6.0*cm, 3.2*cm, 3.7*cm, 1.6*cm],
-            center_from=2,
-        )
-
-        # 2025 full year ranking
-        story.append(Paragraph('Top-10 Sub-Brands by 2025 Full Year Actual Volume', ST['sub']))
-        rank25 = rank_grp.nlargest(10, "Vol_2025_Full").reset_index(drop=True)
-        rank25["Rank"] = range(1, len(rank25)+1)
-        r25_rows = [
-            [r["Rank"], r["Sub_Brand_Description"],
-             _fmt(r["Vol_2025_Full"]), _fmt(r["Vol_2026"])]
-            for _, r in rank25.iterrows()
-        ]
-        story += dtbl(
-            ['Rank', 'Sub-Brand', '2025 Full Yr (9LC)', '2026 YTD (9LC)'],
-            r25_rows,
-            [1.0*cm, 7.5*cm, 3.8*cm, 3.2*cm],
+            [1.4*cm, 5.6*cm, 3.4*cm, 3.4*cm, 1.8*cm],
             center_from=2,
         )
 
     story.append(PageBreak())
 
-    # ══ APPENDIX D — CATEGORY + BRAND FAMILY BREAKDOWN ════════════════════════
-    story += section_hdr('APPENDIX D   CATEGORY + BRAND FAMILY BREAKDOWN')
+    # ══ APPENDIX D — CATEGORY + BRAND FAMILY, 2027 vs 2026 ═══════════════════
+    story += section_hdr('APPENDIX D   CATEGORY + BRAND FAMILY — 2027 vs 2026')
     story += [
         Paragraph(
-            '2026 (actuals + AdjFC) vs 2025 actuals by Category and Brand Family. '
-            'Delta shown in 9LC and %.',
+            '2027 Adjusted Forecast vs the 2026 run-rate (actuals + AdjFC) by Category and '
+            'Brand Family. Delta shown in 9LC and %.',
             ST['body']),
         sp(4),
     ]
 
     if not ca.empty and "Brand_Family" in ca.columns:
-        bf_grp = ca.groupby(["Category_Grouper_Description_Z", "Brand_Family"]).agg({
-            c: "sum" for c in ["Actual_Total_2025", "Total_2026"] if c in ca.columns
-        }).reset_index().rename(columns={
-            "Category_Grouper_Description_Z": "Category",
-        })
-        for col in ["Actual_Total_2025", "Total_2026"]:
-            if col not in bf_grp.columns:
-                bf_grp[col] = 0.0
+        bf_grp = (ca.groupby(["Category_Grouper_Description_Z", "Brand_Family"])
+                    [["_FY_2026", "_FY_2027"]].sum().reset_index()
+                    .rename(columns={"Category_Grouper_Description_Z": "Category"}))
 
-        bf_grp["Delta"]     = bf_grp["Total_2026"] - bf_grp["Actual_Total_2025"]
+        bf_grp["Delta"]     = bf_grp["_FY_2027"] - bf_grp["_FY_2026"]
         bf_grp["Delta_Pct"] = (bf_grp["Delta"] /
-                                bf_grp["Actual_Total_2025"].replace(0, np.nan) * 100)
+                                bf_grp["_FY_2026"].replace(0, np.nan) * 100)
         bf_grp = bf_grp[
             (bf_grp["Brand_Family"].str.strip() != "") &
             (bf_grp["Brand_Family"] != "Unknown") &
             (bf_grp["Category"].str.strip() != "") &
             (bf_grp["Category"] != "Unknown")
         ]
-        bf_grp = bf_grp.sort_values(["Category", "Total_2026"], ascending=[True, False])
+        bf_grp = bf_grp.sort_values(["Category", "_FY_2027"], ascending=[True, False])
 
         bf_rows = []
         for cat in bf_grp["Category"].unique():
             sub = bf_grp[bf_grp["Category"] == cat]
             for _, r in sub.iterrows():
                 bf_rows.append([r["Category"], r["Brand_Family"],
-                                 _fmt(r["Actual_Total_2025"]), _fmt(r["Total_2026"]),
+                                 _fmt(r["_FY_2026"]), _fmt(r["_FY_2027"]),
                                  _fmt(r["Delta"]), _pct(r["Delta_Pct"])])
-            s25 = sub["Actual_Total_2025"].sum()
-            s26 = sub["Total_2026"].sum()
-            d   = s26 - s25
-            dp  = d / s25 * 100 if s25 > 0 else None
-            bf_rows.append([f"TOTAL — {cat}", '', _fmt(s25), _fmt(s26), _fmt(d), _pct(dp)])
+            s26 = sub["_FY_2026"].sum()
+            s27 = sub["_FY_2027"].sum()
+            d   = s27 - s26
+            bf_rows.append([f"TOTAL — {cat}", '', _fmt(s26), _fmt(s27),
+                            _fmt(d), _pct(_growth(s27, s26))])
 
         story += dtbl(
-            ['Category', 'Brand Family', '2025 Actuals', '2026 (A+F)', 'Delta (9LC)', 'Delta %'],
+            ['Category', 'Brand Family', '2026 (A+F)', '2027 AdjFC', 'Delta (9LC)', 'Delta %'],
             bf_rows,
             [3.5*cm, 3.5*cm, 2.5*cm, 2.5*cm, 2.2*cm, 2.0*cm],
         )

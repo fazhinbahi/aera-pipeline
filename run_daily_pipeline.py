@@ -102,6 +102,10 @@ def main():
         run_step("fetch_adjfc.py",         "Step 1/8 — Fetch AdjFC from Aera")
         run_step("fetch_order_history.py", "Step 2/8 — Fetch Order History from Aera")
         run_step("fetch_pmcf.py",          "Step 3/8 — Fetch PMCF from Aera")
+        # Forecast Adjustments screen rows per market/category — the DR deck's
+        # source for Source FC, PMCF, RR Actuals + Adj FC, Budget, LE (~30 min)
+        run_step("fetch_fa_screen.py",     "Step 3b/8 — Fetch Forecast Adjustments screen rows", critical=False)
+        run_step("fetch_consensus_snapshots.py", "Step 3c/8 — Fetch consensus snapshots (new approvals)", critical=False)
 
         # Clear pair checkpoint so each daily run fetches fresh data from scratch
         sf_checkpoint = os.path.join(DIR, "sf_9lc_pair_checkpoint.parquet")

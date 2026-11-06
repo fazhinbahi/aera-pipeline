@@ -266,6 +266,33 @@ give materially different numbers — Australia Sep 2026 reads 42.95% wMAPE at �
 and 37.77% at −3. Fcst1M (Lag-1) is available if the user asks for a different lag. Exact PBI reconciliation
 can still drift slightly in some months because the PBI lock date follows the
 IBP review calendar rather than a fixed calendar offset.
+
+─────────────────────────────────────────────────────────────────
+TABLE 4 (views): consensus_fc_lag, consensus_accuracy_lag, consensus_actuals
+─────────────────────────────────────────────────────────────────
+Source  : Aera "Consensus Forecast EA" subject area, one snapshot per consensus
+          APPROVAL DATE (fetch_consensus_snapshots.py → consensus_snapshots), joined
+          to consensus_cycle_calendar (approval → cycle_month per group IMC/3PD/GTR,
+          role Primary/Alternate) and material_upc_map. This is the automated
+          version of Enrique's datos_reducidos.csv / Forecast Accuracy dashboards.
+Use for : Consensus vs Statistical (Source) forecast by lag, WMAPE/BIAS by lag,
+          forecast evolution across approvals. Prefer these over lag1_data when the
+          question is about consensus cycles, lags other than 1/3/4, or 2025.
+consensus_fc_lag  columns: approval_date, snapshot_date, cycle_month, role, group_name,
+          lag (= months from cycle_month to forecast_month; -1 … 12), forecast_month,
+          sub_segment, customer_country, material, upc, sub_brand, category, volume_l,
+          source_fc, stat_fc, consensus_fc, approved_delta, actual_order_qty (9LC).
+consensus_accuracy_lag columns: group_name, sub_segment, customer_country, upc, month,
+          lag (0..5), approval_date, consensus_fc, stat_fc, source_fc, actual_9lc —
+          one row per UPC-market-month-lag, Primary approvals only, FULL OUTER JOIN
+          with orders (missing side = 0).
+          WMAPE = SUM(ABS(consensus_fc - actual_9lc)) / SUM(actual_9lc)
+          BIAS  = (SUM(consensus_fc) - SUM(actual_9lc)) / SUM(actual_9lc)
+          Official grain is UPC × group: SUM countries/sub-segments per UPC BEFORE the ABS.
+          Use closed months only (month < first day of the current month); "N-3" = lag 3.
+consensus_actuals: orders (9LC) by group_name, sub_segment, customer_country, upc, month.
+datos_reducidos_* (fc, act, cal, dim, sku, evo, ns, meta): Enrique's own export as
+          loaded (generated_at in every row) — use only to reconcile with his dashboards.
 """
 
 SYSTEM_PROMPT = f"""\

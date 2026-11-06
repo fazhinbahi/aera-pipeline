@@ -31,6 +31,9 @@ DIR        = os.path.dirname(os.path.abspath(__file__))
 OH_PARQUET   = os.path.join(DIR, "order_history_emea_apac.parquet")
 FC_PARQUET   = os.path.join(DIR, "adjfc_nz.parquet")
 PMCF_PARQUET = os.path.join(DIR, "pmcf_monthly.parquet")
+CONS_PARQUET  = os.path.join(DIR, "consensus_snapshots.parquet")   # fetch_consensus_snapshots.py
+CONS_CALENDAR = os.path.join(DIR, "consensus_calendar.csv")        # consensus_cycle.py
+UPC_SEED_CSV  = os.path.join(DIR, "material_upc_seed.csv")         # material → UPC from Enrique's datos_reducidos SKU rows
 
 GCP_PROJECT = "euphoric-hull-442815-n8"
 DATASET     = "aera_demand_planning"
@@ -253,6 +256,208 @@ def load_adjfc(client: bigquery.Client):
     _upload(client, df, "adjfc_raw")
 
 
+def load_cycle_snapshot(client: bigquery.Client):
+    """Keep one copy of adjfc_raw per calendar month in adjfc_cycle_snapshots.
+
+    The DR deck's "M-1 Consensus Fcst" row needs the Adjusted Forecast as it
+    stood before the current cycle's edits. adjfc_raw is overwritten daily and
+    PMCF is only yesterday's copy, so the first pipeline run of each month
+    appends a snapshot here (snapshot_month = first day of the month); later
+    runs in the same month leave it untouched.
+    """
+    snap = f"{GCP_PROJECT}.{DATASET}.adjfc_cycle_snapshots"
+    src  = f"{GCP_PROJECT}.{DATASET}.adjfc_raw"
+    client.query(f"""
+        CREATE TABLE IF NOT EXISTS `{snap}` AS
+        SELECT DATE_TRUNC(CURRENT_DATE(), MONTH) AS snapshot_month, * FROM `{src}` WHERE FALSE
+    """).result()
+    n = list(client.query(f"""
+        SELECT COUNT(*) AS n FROM `{snap}`
+        WHERE snapshot_month = DATE_TRUNC(CURRENT_DATE(), MONTH)
+    """).result())[0].n
+    if n:
+        print(f"  Cycle snapshot for this month already stored ({n:,} rows) — skipped")
+        return
+    # A load job, not INSERT ... SELECT: DML is refused on this project's free tier.
+    import datetime as _dt
+    df = pd.read_parquet(FC_PARQUET)
+    df.insert(0, "snapshot_month", _dt.date.today().replace(day=1))
+    df = _clean_df(df)
+    df.columns = [_bq_col(c) for c in df.columns]
+    job = client.load_table_from_dataframe(
+        df, snap, job_config=bigquery.LoadJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_APPEND))
+    job.result()
+    n = list(client.query(f"SELECT COUNT(*) AS n FROM `{snap}` WHERE snapshot_month = DATE_TRUNC(CURRENT_DATE(), MONTH)").result())[0].n
+    print(f"  ✓ Cycle snapshot stored: {n:,} rows → adjfc_cycle_snapshots")
+
+
+def load_fa_screen(client: bigquery.Client):
+    """Forecast Adjustments screen rows (fetch_fa_screen.py) → fa_screen_rows.
+
+    The DR deck's demand-plan table, MoM bridge and month cycle read this
+    table, so they show exactly what the screen shows per market.
+    """
+    path = os.path.join(DIR, "fa_screen_rows.parquet")
+    if not os.path.exists(path):
+        print("  fa_screen_rows.parquet not found — skipped")
+        return
+    df = pd.read_parquet(path)
+    df["fetch_date"] = pd.to_datetime(df["fetch_date"]).dt.date
+    print(f"Loading {os.path.basename(path)}… {df.shape[0]:,} rows × {df.shape[1]} cols")
+    _upload(client, df, "fa_screen_rows")
+
+
+def _upload_frame(client: bigquery.Client, df: pd.DataFrame, table_name: str):
+    """Like _upload but without _clean_df: keeps code columns (material, UPC) as strings.
+    Date columns must already be python date objects (autodetect maps them to DATE)."""
+    table_ref = f"{GCP_PROJECT}.{DATASET}.{table_name}"
+    df = df.copy()
+    df.columns = [_bq_col(c) for c in df.columns]
+    print(f"  Uploading {len(df):,} rows × {df.shape[1]} cols → {table_ref}…")
+    job = client.load_table_from_dataframe(
+        df, table_ref,
+        job_config=bigquery.LoadJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE, autodetect=True))
+    job.result()
+    print(f"  ✓ {client.get_table(table_ref).num_rows:,} rows in {table_ref}")
+
+
+def build_material_upc_map() -> pd.DataFrame:
+    """material → UPC: Aera order history first, Enrique's SKU seed for materials it lacks."""
+    parts = []
+    if os.path.exists(OH_PARQUET):
+        oh = pd.read_parquet(OH_PARQUET, columns=["Material Number", "UPC Code"]).dropna()
+        oh = oh.rename(columns={"Material Number": "material", "UPC Code": "upc"})
+        oh = oh[(oh["material"] != "") & ~oh["upc"].isin(["", "Not Set"])].drop_duplicates()
+        oh["source"] = "order_history"
+        parts.append(oh)
+    if os.path.exists(UPC_SEED_CSV):
+        seed = pd.read_csv(UPC_SEED_CSV, dtype=str)[["material", "upc"]].drop_duplicates()
+        seed["source"] = "datos_reducidos_sku"
+        parts.append(seed)
+    m = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["material", "upc", "source"])
+    m["material"] = m["material"].astype(str).str.strip()
+    m["upc"] = m["upc"].astype(str).str.strip()
+    # one UPC per material: order history wins, then the seed
+    m["rank"] = m["source"].map({"order_history": 0, "datos_reducidos_sku": 1})
+    m = m.sort_values(["material", "rank"]).drop_duplicates("material", keep="first").drop(columns="rank")
+    return m.reset_index(drop=True)
+
+
+# Materials without a UPC get the same synthetic key on both sides (forecast and orders), the way
+# Enrique's "own_upc" rows do ("Not Set · KRAKEN RTD COLA · 0.375 L"), so they still pair up.
+_NOT_SET_UPC = "CONCAT('Not Set · ', UPPER({brand}), ' · ', FORMAT('%g', {vol}), ' L')"
+
+CONSENSUS_VIEWS = {
+    # Enrique's FC rows: every snapshot row with its cycle, lag and UPC
+    "consensus_fc_lag": """
+        SELECT s.approval_date, c.snapshot_date, c.cycle_month, c.role, c.group_name,
+               DATE_DIFF(s.forecast_month, c.cycle_month, MONTH) AS lag,
+               s.forecast_month, s.sub_segment, s.customer_country, s.material,
+               COALESCE(m.upc, """ + _NOT_SET_UPC.format(brand="s.sub_brand", vol="s.volume_l") + """) AS upc,
+               s.sub_brand, s.category, s.volume_l, s.ext_material_group, s.material_desc,
+               s.source_fc, s.stat_fc, s.consensus_fc, s.approved_delta, s.consensus_phy_cases,
+               s.actual_order_qty, s.n_customers, s.fetch_date
+        FROM (SELECT * FROM `{ds}.consensus_snapshots`
+              QUALIFY fetch_date = MAX(fetch_date) OVER (PARTITION BY approval_date)) s
+        JOIN `{ds}.consensus_cycle_calendar` c
+          ON c.approval_date = s.approval_date
+         AND c.group_name = CASE WHEN s.sub_segment LIKE '%GTR%' THEN 'GTR'
+                                 WHEN s.sub_segment LIKE '%IMC%' THEN 'IMC' ELSE '3PD' END
+        LEFT JOIN `{ds}.material_upc_map` m ON m.material = s.material
+    """,
+    # Enrique's ACT rows: sales orders (9LC) at group x sub-segment x country x UPC x month
+    "consensus_actuals": """
+        SELECT CASE WHEN Sub_Segments LIKE '%GTR%' THEN 'GTR'
+                    WHEN Sub_Segments LIKE '%IMC%' THEN 'IMC' ELSE '3PD' END AS group_name,
+               Sub_Segments AS sub_segment, Country_Name AS customer_country,
+               CASE WHEN UPC_Code IS NULL OR UPC_Code IN ('', 'Not Set')
+                    THEN """ + _NOT_SET_UPC.format(brand="Sub_Brand_Description", vol="Volume") + """
+                    ELSE UPC_Code END AS upc,
+               PARSE_DATE('%b %Y', Month_Year) AS month, SUM(Order_Qty_9LC) AS actual_9lc
+        FROM `{ds}.order_history_raw`
+        WHERE Month_Year IS NOT NULL
+        GROUP BY 1, 2, 3, 4, 5
+    """,
+    # forecast vs actual per lag (0..5), Primary approvals, UPC grain — the base of WMAPE / BIAS by lag:
+    #   WMAPE = SUM(ABS(consensus_fc - actual_9lc)) / SUM(actual_9lc), BIAS = (SUM(consensus_fc) - SUM(actual_9lc)) / SUM(actual_9lc)
+    # The official grain (UPC x group) sums countries and sub-segments before the ABS; do that in the query.
+    "consensus_accuracy_lag": """
+        WITH f AS (
+          SELECT group_name, sub_segment, customer_country, upc, forecast_month AS month, lag, approval_date,
+                 SUM(consensus_fc) AS consensus_fc, SUM(stat_fc) AS stat_fc, SUM(source_fc) AS source_fc
+          FROM `{ds}.consensus_fc_lag`
+          WHERE role = 'Primary' AND lag BETWEEN 0 AND 5
+          GROUP BY 1, 2, 3, 4, 5, 6, 7
+        ),
+        avail AS (SELECT DISTINCT group_name, month, lag, approval_date FROM f),
+        a AS (
+          SELECT a.group_name, a.sub_segment, a.customer_country, a.upc, a.month, v.lag, v.approval_date, a.actual_9lc
+          FROM `{ds}.consensus_actuals` a
+          JOIN avail v ON v.group_name = a.group_name AND v.month = a.month
+        )
+        SELECT COALESCE(f.group_name, a.group_name) AS group_name,
+               COALESCE(f.sub_segment, a.sub_segment) AS sub_segment,
+               COALESCE(f.customer_country, a.customer_country) AS customer_country,
+               COALESCE(f.upc, a.upc) AS upc,
+               COALESCE(f.month, a.month) AS month,
+               COALESCE(f.lag, a.lag) AS lag,
+               COALESCE(f.approval_date, a.approval_date) AS approval_date,
+               IFNULL(f.consensus_fc, 0) AS consensus_fc, IFNULL(f.stat_fc, 0) AS stat_fc,
+               IFNULL(f.source_fc, 0) AS source_fc, IFNULL(a.actual_9lc, 0) AS actual_9lc
+        FROM f
+        FULL OUTER JOIN a
+          ON a.group_name = f.group_name AND a.sub_segment = f.sub_segment
+         AND a.customer_country = f.customer_country AND a.upc = f.upc
+         AND a.month = f.month AND a.lag = f.lag
+    """,
+}
+
+
+def load_consensus(client: bigquery.Client):
+    """Consensus snapshots by approval date (fetch_consensus_snapshots.py) → consensus_snapshots,
+    the cycle calendar → consensus_cycle_calendar, material → UPC map, and the lag / accuracy views."""
+    if not os.path.exists(CONS_PARQUET):
+        print("  consensus_snapshots.parquet not found — run fetch_consensus_snapshots.py first. Skipping.")
+        return
+    df = pd.read_parquet(CONS_PARQUET)
+    for c in ("approval_date", "forecast_month", "fetch_date"):
+        df[c] = pd.to_datetime(df[c]).dt.date
+    for c in ("sub_segment", "customer_country", "material", "ext_material_group", "sub_brand", "category", "material_desc"):
+        df[c] = df[c].fillna("").astype(str)
+    print(f"Loading {os.path.basename(CONS_PARQUET)}… {df.shape[0]:,} rows × {df.shape[1]} cols, "
+          f"{df['approval_date'].nunique()} approvals")
+    # A full local history replaces the table; a partial parquet (CI only holds the approvals it
+    # fetched that day) is APPENDED — the views keep the latest fetch_date per approval.
+    table_ref = f"{GCP_PROJECT}.{DATASET}.consensus_snapshots"
+    try:
+        in_bq = {r.approval_date for r in client.query(f"SELECT DISTINCT approval_date FROM `{table_ref}`").result()}
+    except Exception:
+        in_bq = set()
+    have = set(df["approval_date"].unique())
+    if in_bq <= have:
+        _upload_frame(client, df, "consensus_snapshots")
+    else:
+        print(f"  parquet holds {len(have)} approval(s), BigQuery {len(in_bq)} → appending (no truncate)")
+        job = client.load_table_from_dataframe(
+            df, table_ref,
+            job_config=bigquery.LoadJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_APPEND, autodetect=True))
+        job.result()
+        print(f"  ✓ {client.get_table(table_ref).num_rows:,} rows in {table_ref}")
+
+    cal = pd.read_csv(CONS_CALENDAR, dtype=str).fillna("")
+    cal["approval_date"] = pd.to_datetime(cal["approval_date"]).dt.date
+    cal["snapshot_date"] = pd.to_datetime(cal["snapshot_date"], errors="coerce").dt.date
+    cal["cycle_month"] = pd.to_datetime(cal["cycle_month"] + "-01").dt.date
+    _upload_frame(client, cal, "consensus_cycle_calendar")
+
+    _upload_frame(client, build_material_upc_map(), "material_upc_map")
+
+    ds = f"{GCP_PROJECT}.{DATASET}"
+    for name, sql in CONSENSUS_VIEWS.items():
+        client.query(f"CREATE OR REPLACE VIEW `{ds}.{name}` AS {sql.format(ds=ds)}").result()
+        print(f"  ✓ view {name}")
+
+
 def load_order_history(client: bigquery.Client):
     print(f"Loading {os.path.basename(OH_PARQUET)}…")
     df = pd.read_parquet(OH_PARQUET)
@@ -335,7 +540,7 @@ def load_stat_3pd_forecast(client: bigquery.Client):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--table", choices=["sply", "adjfc", "oh", "customer", "pmcf", "lag1", "stat", "all"], default="all")
+    parser.add_argument("--table", choices=["sply", "adjfc", "oh", "customer", "pmcf", "lag1", "stat", "fa", "consensus", "all"], default="all")
     args = parser.parse_args()
 
     print(f"Authenticating with BigQuery ({GCP_PROJECT})…")
@@ -347,6 +552,10 @@ def main():
         print()
     if args.table in ("adjfc", "all"):
         load_adjfc(client)
+        try:
+            load_cycle_snapshot(client)
+        except Exception as e:
+            print(f"  ⚠ Cycle snapshot skipped: {e}")
         print()
     if args.table in ("oh", "all"):
         load_order_history(client)
@@ -362,6 +571,15 @@ def main():
         print()
     if args.table in ("stat", "all"):
         load_stat_3pd_forecast(client)
+        print()
+    if args.table in ("fa", "all"):
+        load_fa_screen(client)
+        print()
+    if args.table in ("consensus", "all"):
+        try:
+            load_consensus(client)
+        except Exception as e:
+            print(f"  ⚠ consensus load skipped: {e}")
         print()
 
     print("✓ All done.")

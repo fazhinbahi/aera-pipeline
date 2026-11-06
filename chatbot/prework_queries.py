@@ -27,7 +27,23 @@ OPEN_2026   = [m for m in _ALL_MONTHS if m not in CLOSED_2026]
 LAST_CLOSED = CLOSED_2026[-1] if CLOSED_2026 else None
 
 
+_CLIENT: Optional[bigquery.Client] = None
+_CLIENT_BORN: float = 0.0
+_CLIENT_TTL_S = 40 * 60      # gcloud access tokens live 60 min; renew well before
+
+
 def _client() -> bigquery.Client:
+    """One BigQuery client per process, renewed before its token expires.
+
+    Locally the credentials come from `gcloud auth print-access-token`, which
+    can take tens of seconds per call — building a client per query made a
+    deck take minutes. The service-account path (Streamlit Cloud, CI) is cheap
+    but is cached the same way for consistency.
+    """
+    global _CLIENT, _CLIENT_BORN
+    import time
+    if _CLIENT is not None and time.time() - _CLIENT_BORN < _CLIENT_TTL_S:
+        return _CLIENT
     sa_json = os.getenv("GCP_SA_JSON")
     if sa_json:
         from google.oauth2 import service_account
@@ -35,13 +51,16 @@ def _client() -> bigquery.Client:
         creds = service_account.Credentials.from_service_account_info(
             info, scopes=["https://www.googleapis.com/auth/bigquery"]
         )
-        return bigquery.Client(project=GCP_PROJECT, credentials=creds)
-    token = subprocess.check_output(
-        ["gcloud", "auth", "print-access-token", f"--account={GCLOUD_ACC}"],
-        stderr=subprocess.DEVNULL,
-    ).decode().strip()
-    return bigquery.Client(project=GCP_PROJECT,
-                           credentials=goog_creds.Credentials(token=token))
+        _CLIENT = bigquery.Client(project=GCP_PROJECT, credentials=creds)
+    else:
+        token = subprocess.check_output(
+            ["gcloud", "auth", "print-access-token", f"--account={GCLOUD_ACC}"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        _CLIENT = bigquery.Client(project=GCP_PROJECT,
+                                  credentials=goog_creds.Credentials(token=token))
+    _CLIENT_BORN = time.time()
+    return _CLIENT
 
 
 def fetch_customers(country: str, sub_segment: str) -> list:

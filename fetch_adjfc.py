@@ -292,6 +292,30 @@ def main():
         print("No data returned — Aera may be down. Aborting to prevent empty BQ load.")
         sys.exit(1)
 
+    # ── Data-quality gate: Country Name must be populated ─────────────────────
+    # Sep 2026 incident: Aera's Country Name attribute on this BIO started
+    # returning 'Not Set' for every row, silently zeroing all per-market AdjFC
+    # downstream. Repair from the customer->country map (customers map 1:1 to
+    # countries); abort loudly if the repair cannot bring it back under 20%.
+    if "Country Name" in df_adjfc.columns:
+        notset_rate = (df_adjfc["Country Name"] == "Not Set").mean()
+        if notset_rate > 0.20:
+            print(f"⚠ Country Name is 'Not Set' on {notset_rate:.0%} of rows — "
+                  f"Aera attribute broken. Repairing from customer_country_map.csv…")
+            map_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "customer_country_map.csv")
+            if os.path.exists(map_path):
+                cmap = pd.read_csv(map_path, dtype=str).set_index("Customer_Number")["Country_Name"]
+                mask = df_adjfc["Country Name"] == "Not Set"
+                df_adjfc.loc[mask, "Country Name"] = (
+                    df_adjfc.loc[mask, "Customer Number"].astype(str).map(cmap).fillna("Not Set"))
+                notset_rate = (df_adjfc["Country Name"] == "Not Set").mean()
+                print(f"  after repair: {notset_rate:.2%} Not Set")
+            if notset_rate > 0.20:
+                print("✗ Country Name still broken after repair — aborting to "
+                      "prevent corrupt BQ load. Raise with Aera support.")
+                sys.exit(2)
+
     print(f"\n{'─' * 60}")
     print(f"Rows:    {len(df_adjfc):,}")
     print(f"Columns: {list(df_adjfc.columns)}")
