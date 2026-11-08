@@ -13,7 +13,7 @@ from typing import Callable, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from dr_deck_data import (Cycle, bridge_from_fa, demand_plan_from_fa, fetch_bridge,
+from dr_deck_data import (Cycle, bridge_from_fa, composition_from_fa, demand_plan_from_fa, fetch_bridge,
                           fetch_demand_plan, fetch_fa_rows, fetch_n3_drivers,
                           fetch_npd_tracking, fetch_scope_map, pick_baseline)
 from dr_deck_pptx import Section, build_deck
@@ -70,6 +70,7 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
         fa = fetch_fa_rows(sub_segment, cs, all_countries)
         why = ""
         dp_rtd = None
+        comps: list = []
         if fa is not None:
             # Preferred: the Forecast Adjustments screen rows, Aera's own cycle
             cycle = Cycle.from_aera(fa.closed_through, fa.year)
@@ -85,6 +86,10 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
             if is_region:
                 bridges.append(bridge_from_fa(fa, "country", cycle))
             bridges.append(bridge_from_fa(fa, "category", cycle))
+            # split waterfalls: FY Adj. Forecast total → the parts that hold it
+            if is_region:
+                comps.append(composition_from_fa(fa, "country", cycle))
+            comps.append(composition_from_fa(fa, "category", cycle))
         else:
             # Fallback: report tables + month-start snapshots
             snap, why = pick_baseline(sub_segment, cs, cycle, baseline)
@@ -97,6 +102,7 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
                 bridges.append(fetch_bridge(sub_segment, cs, "country", cycle, snap))
             bridges.append(fetch_bridge(sub_segment, cs, "category", cycle, snap))
         bridges = [b for b in bridges if b is not None]
+        comps = [c for c in comps if c is not None]
         log(f"{name}: NPD tracking")
         npd = fetch_npd_tracking(sub_segment, cs, cycle)
         log(f"{name}: N-3 drivers")
@@ -110,7 +116,8 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
         except Exception as e:              # the datos_reducidos tables are optional
             log(f"{name}: accuracy series unavailable ({e})")
         sections.append(Section(name=name, demand_plan=dp, demand_plan_rtd=dp_rtd, npd=npd, drivers=drv,
-                                bridges=bridges, accuracy=acc, rca=rca, baseline_note=why, cycle=cycle))
+                                bridges=bridges, compositions=comps, accuracy=acc, rca=rca,
+                                baseline_note=why, cycle=cycle))
     return sections
 
 
@@ -156,6 +163,12 @@ def build_xlsx(sections: list[Section]) -> bytes:
                 s.demand_plan.table.round(1).to_excel(xw, sheet_name=_sheet(f"{stem} plan"))
             if s.demand_plan_rtd is not None:
                 s.demand_plan_rtd.table.round(1).to_excel(xw, sheet_name=_sheet(f"{stem} plan RTDs"))
+            for c in s.compositions:
+                what = c.title.split("by ")[-1] if "by " in c.title else "split"
+                rows = [(c.total_label.replace("\n", " "), c.total, 1.0)] + \
+                       [(lbl, v, (v / c.total if c.total else 0.0)) for lbl, v in c.parts]
+                pd.DataFrame(rows, columns=["Part", "Adj FC FY (9LC)", "Share"]).round(3).to_excel(
+                    xw, sheet_name=_sheet(f"{stem} split {what}"), index=False)
             if s.npd is not None and not s.npd.table.empty:
                 s.npd.table.to_excel(xw, sheet_name=_sheet(f"{stem} NPD"), index=False)
             if s.drivers is not None:

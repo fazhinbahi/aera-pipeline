@@ -29,7 +29,7 @@ from pptx.oxml.ns import qn
 from pptx.oxml.xmlchemy import OxmlElement
 from pptx.util import Inches, Pt
 
-from dr_deck_data import Bridge, DemandPlan, N3Drivers, NpdTracking
+from dr_deck_data import Bridge, Composition, DemandPlan, N3Drivers, NpdTracking
 
 GREEN_UP   = RGBColor(0xA9, 0xD1, 0x8E)
 ORANGE_DN  = RGBColor(0xF4, 0xB1, 0x83)
@@ -79,6 +79,7 @@ class Section:
     npd: Optional[NpdTracking] = None
     drivers: Optional[N3Drivers] = None
     bridges: list = field(default_factory=list)   # Bridge objects, in display order
+    compositions: list = field(default_factory=list)   # Composition objects: total → parts waterfalls
     accuracy: Optional[object] = None             # AccuracySeries (dr_deck_accuracy) – monthly WMAPE / BIAS
     rca: Optional[object] = None                  # RcaDrivers (dr_deck_accuracy) – top-10 offenders, replaces drivers when present
     baseline_note: str = ""                       # why a different snapshot was used, if so
@@ -776,6 +777,108 @@ def add_rca_drivers_slide(prs: Presentation, section: Section):
     return slide
 
 
+def render_composition_png(comp: Composition, width_in: float, height_in: float, dpi: int = 220) -> bytes:
+    """Split waterfall: the total as the first (navy) bar, then one floating bar
+    per part stepping down from the running level to zero, labelled with the
+    value and its share of the total. Same styling as the MoM bridge."""
+    import math
+    import textwrap
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
+
+    raw_cats = [comp.total_label] + [lbl for lbl, _ in comp.parts]
+    n = len(raw_cats)
+    slot_in = width_in * 0.88 / n
+    label_pt = 12 if slot_in >= 1.2 else (11 if slot_in >= 0.9 else 9.5)
+    char_in = label_pt * 0.58 / 72
+    wrap_at = max(8, int(slot_in * 0.95 / char_in))
+    wrapped = ["\n".join(line.replace("/ ", "/")
+                         for line in textwrap.wrap(c.replace("/", "/ "), wrap_at, break_long_words=False))
+               for c in raw_cats]
+    rot = 0 if all(len(line) * char_in <= slot_in * 0.98 for c in wrapped for line in c.split("\n")) else 30
+    cats = raw_cats if rot else wrapped
+    navy, part_col, neg_col = "#1F4E79", "#5B9BD5", "#F4B183"
+    total = comp.total
+    bottoms, heights, colors, labels = [0.0], [total], [navy], [f"{total:,.0f}"]
+    level = total
+    for _, v in comp.parts:
+        top, bottom = (level, level - v) if v >= 0 else (level - v, level)
+        bottoms.append(bottom); heights.append(abs(v))
+        colors.append(part_col if v >= 0 else neg_col)
+        share = (v / total * 100) if total else 0
+        labels.append(f"{v:,.0f}\n{share:.0f}%")
+        level -= v
+    fig, ax = plt.subplots(figsize=(width_in, height_in), dpi=dpi)
+    x = list(range(n))
+    bars = ax.bar(x, heights, bottom=bottoms, color=colors, width=0.62, zorder=3)
+    y1 = math.ceil(total * 1.12 / _nice_step(total * 1.12)) * _nice_step(total * 1.12)
+    ax.set_ylim(0, y1)
+    lvl = total
+    for i, (_, v) in enumerate(comp.parts, start=1):
+        ax.plot([i - 1 + 0.31, i - 0.31], [lvl, lvl], color="#9E9E9E", lw=0.8, zorder=2)
+        lvl -= v
+    big = 14 if slot_in >= 1.2 else (12 if slot_in >= 0.9 else 10)
+    small = 12 if slot_in >= 1.2 else (11 if slot_in >= 0.9 else 9.5)
+    bar_in = slot_in * 0.62
+
+    def _fits(text: str, size: float) -> bool:
+        return max(len(t) for t in text.split("\n")) * size * 0.62 / 72 <= bar_in
+
+    for i, (bar, lab, col) in enumerate(zip(bars, labels, colors)):
+        top = bar.get_y() + bar.get_height()
+        size = big if _fits(lab, big) else small
+        if col == navy and _fits(lab, size):
+            ax.text(i, bar.get_height() / 2, lab, ha="center", va="center", fontsize=size,
+                    fontweight="bold", color="white", zorder=4)
+        elif col == navy:
+            ax.text(i, top + y1 * 0.012, lab, ha="center", va="bottom", fontsize=size,
+                    fontweight="bold", color=navy, zorder=4)
+        elif bar.get_height() >= y1 * 0.1 and _fits(lab, size):
+            ax.text(i, bar.get_y() + bar.get_height() / 2, lab, ha="center", va="center", fontsize=size,
+                    fontweight="bold", color="#222222", zorder=4)
+        else:
+            ax.text(i, top + y1 * 0.012, lab, ha="center", va="bottom", fontsize=small,
+                    fontweight="bold", color="#222222", zorder=4)
+    ax.set_xticks(x)
+    ax.set_xticklabels(cats, fontsize=small, rotation=rot, ha="right" if rot else "center",
+                       rotation_mode="anchor" if rot else "default")
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
+    ax.tick_params(axis="y", labelsize=small, length=0)
+    ax.tick_params(axis="x", length=0, pad=6)
+    ax.grid(axis="y", color="#D9D9D9", lw=0.8, zorder=0)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color("#BFBFBF")
+    ax.set_title(comp.title, fontsize=15 if width_in >= 9 else 12, color="#333333", pad=12)
+    ytick_in = len(f"{y1:,.0f}") * small * 0.6 / 72 + 0.25
+    lines = max(c.count("\n") + 1 for c in cats)
+    longest_in = max(len(c) for c in raw_cats) * char_in
+    xlab_in = (longest_in * 0.5 + 0.2 if rot else 0.25 * lines) + 0.15
+    fig.subplots_adjust(left=min(0.2, ytick_in / width_in), right=0.985, top=0.9,
+                        bottom=min(0.4, xlab_in / height_in))
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, facecolor="white")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def add_composition_slides(prs: Presentation, section: Section):
+    """One slide per split waterfall (Adj. Forecast FY total → categories / countries)."""
+    slides = []
+    for comp in [c for c in section.compositions if c is not None]:
+        suffix = comp.title.split("–")[-1].strip() if "–" in comp.title else ""
+        slide = _content_slide(prs, f"Adj. Forecast Split _ {section.name}" + (f" – {suffix}" if suffix else ""),
+                               section.figures_note)
+        png = render_composition_png(comp, CONTENT_W, 5.45)
+        slide.shapes.add_picture(io.BytesIO(png), Inches(MARGIN_L), Inches(0.95), Inches(CONTENT_W), Inches(5.45))
+        _footnote(slide, comp.note + " Labels show the amount and its share of the total.")
+        slides.append(slide)
+    return slides
+
+
 def add_drivers_slide(prs: Presentation, section: Section):
     d = section.drivers
     slide = _content_slide(prs, f"{section.name} KPIs: N-3 drivers", None)
@@ -903,6 +1006,8 @@ def build_deck(deck_title: str, sections: list[Section], cycle_label: str, cycle
                             "demand plan to show.", MARGIN_L, 1.4, 12, 0.6, size=12, color=MUTED)
         if s.bridges:
             add_bridge_slide(prs, s)
+        if s.compositions:
+            add_composition_slides(prs, s)                   # total → categories, right after the bridge
         if s.npd is not None:
             add_npd_slides(prs, s, cycle_year, next_year)      # one monthly Innovations slide
         add_accuracy_slide(prs, s)

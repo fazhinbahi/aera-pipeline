@@ -163,6 +163,14 @@ if deck:
                 bdf["9LC"] = bdf["9LC"].map(lambda v: f"{v:+,.0f}" if abs(v) < abs(b.start) * 0.5 else f"{v:,.0f}")
                 st.dataframe(bdf, use_container_width=True, hide_index=True)
                 st.caption(b.note)
+            for c in s.compositions:
+                st.markdown(f"**{c.title}**")
+                rows = [(c.total_label.replace("\n", " "), c.total, 1.0)] + \
+                       [(lbl, v, (v / c.total if c.total else 0.0)) for lbl, v in c.parts]
+                cdf = pd.DataFrame(rows, columns=["Part", "9LC", "Share"])
+                cdf["9LC"] = cdf["9LC"].map(lambda v: f"{v:,.0f}"); cdf["Share"] = cdf["Share"].map(lambda v: f"{v:.0%}")
+                st.dataframe(cdf, use_container_width=True, hide_index=True)
+                st.caption(c.note)
             if s.npd is not None:
                 st.markdown("**NPD tracking**")
                 st.caption(s.npd.note)

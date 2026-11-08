@@ -678,6 +678,43 @@ class Bridge:
     note: str
 
 
+@dataclass
+class Composition:
+    """A split waterfall: the total first, then the parts that make it up."""
+    title: str
+    total_label: str
+    total: float
+    parts: list[tuple[str, float]]        # (label, value) largest first; 'Other / Not Set' last
+    note: str
+
+
+def composition_from_fa(fa: FaScope, dim: str, cycle: Cycle, key: str = "adjfc") -> "Optional[Composition]":
+    """Faizan, 8 Nov 2026: after the MoM bridge, a waterfall whose first bar is the
+    current Adj. Forecast full-year total and whose following bars are the amount
+    each category (or country) holds, so they add back to the total. Values are
+    the screen's CURRENT_YEAR_TOTAL for the Adj. Forecast line; rows the screen
+    does not attribute to a category end up in 'Other / Not Set'."""
+    y = cycle.year
+    parts_src = fa.by_country if dim == "country" else fa.by_category
+    total = float(fa.cy_total.get(key, 0.0))
+    if not parts_src or abs(total) < 0.5:
+        return None
+    parts = sorted(((name, float(v.get(key, 0.0))) for name, v in parts_src.items()),
+                   key=lambda kv: -abs(kv[1]))
+    parts = [(n, v) for n, v in parts if abs(v) >= 0.5]
+    rest = total - sum(v for _, v in parts)
+    if abs(rest) >= max(1.0, abs(total) * 0.0005):      # ignore the screen's own rounding
+        parts.append(("Other / Not Set", rest))
+    what = "Category" if dim == "category" else "Country"
+    return Composition(
+        title=f"Adj. Forecast {y} FY split – by {what}",
+        total_label=f"Forecast N\n{y} FY", total=total, parts=parts,
+        note=(f"Forecast N = Adj. Forecast {y} full year from the Aera Forecast Adjustments screen "
+              f"(fetched {fa.fetch_date:%d %b %Y}); each bar is the forecast that {what.lower()} holds, "
+              f"so the bars add up to the total."),
+    )
+
+
 BRIDGE_DIMS = {
     "country":  ("Country_Name", "by Country"),
     "category": ("Category_Grouper_Description_Z", "by Category"),
