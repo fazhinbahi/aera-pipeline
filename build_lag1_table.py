@@ -248,7 +248,10 @@ def load_sales_orders_bq() -> pd.DataFrame:
         GROUP BY 1, 2, 3, 4
         HAVING SUM(Order_Qty_9LC) > 0
     """
-    df = client.query(q).to_dataframe()
+    # REST download, not the BigQuery Storage API: the CI service account has no
+    # bigquery.readsessions.create permission (7 Nov 2026 run failed with
+    # PERMISSION_DENIED and lag1_data was never rebuilt).
+    df = client.query(q).to_dataframe(create_bqstorage_client=False)
     df["Customer_Number"] = df["Customer_Number"].astype(str)
     print(f"  {len(df):,} SO rows from BQ order_history_raw")
     return df

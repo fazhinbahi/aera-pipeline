@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import datetime
 import os
 import re
 import subprocess
@@ -538,9 +539,50 @@ def load_stat_3pd_forecast(client: bigquery.Client):
     _upload(client, df, "stat_3pd_forecast", rename_map=_stat3pd_rename_map())
 
 
+EXPIRY_REFRESH_DAYS = 45     # recreate anything that would expire sooner than this
+
+
+def refresh_expiry(client: bigquery.Client, min_days_left: int = EXPIRY_REFRESH_DAYS):
+    """Keep every table and view alive in the BigQuery SANDBOX.
+
+    The project has no billing, so the dataset carries the sandbox's fixed
+    60-day default table expiration, which cannot be removed or extended
+    (PATCH expires → 403 "must be less than 60 days while in sandbox mode").
+    A WRITE_TRUNCATE load does NOT reset it (adjfc_raw created 19 Sep 2026
+    was 9 days from expiry on 8 Nov despite daily loads), and on 7–8 Nov 2026
+    lag1_data and cov_segmentation silently disappeared this way.
+    Recreating a table in place (CREATE OR REPLACE TABLE t AS SELECT * FROM t)
+    does reset the clock, and so does CREATE OR REPLACE VIEW; this runs at the
+    end of every load for anything within `min_days_left` of expiring.
+    """
+    ds = f"{GCP_PROJECT}.{DATASET}"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    refreshed, failed = [], []
+    for t in client.list_tables(ds):
+        tb = client.get_table(f"{ds}.{t.table_id}")
+        if tb.expires is None or (tb.expires - now).days >= min_days_left:
+            continue
+        ref = f"`{ds}.{t.table_id}`"
+        try:
+            if tb.table_type == "VIEW":
+                client.query(f"CREATE OR REPLACE VIEW {ref} AS {tb.view_query}").result()
+            else:
+                client.query(f"CREATE OR REPLACE TABLE {ref} AS SELECT * FROM {ref}").result()
+            new = client.get_table(f"{ds}.{t.table_id}")
+            refreshed.append(f"{t.table_id} ({(tb.expires - now).days}d → {(new.expires - now).days}d)")
+        except Exception as e:
+            failed.append(f"{t.table_id}: {str(e)[:120]}")
+    if refreshed:
+        print("  ✓ expiry refreshed: " + ", ".join(refreshed))
+    else:
+        print(f"  expiry: nothing within {min_days_left} days of expiring")
+    for f in failed:
+        print(f"  ⚠ expiry refresh failed — {f}")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--table", choices=["sply", "adjfc", "oh", "customer", "pmcf", "lag1", "stat", "fa", "consensus", "all"], default="all")
+    parser.add_argument("--table", choices=["sply", "adjfc", "oh", "customer", "pmcf", "lag1", "stat", "fa", "consensus", "expiry", "all"], default="all")
     args = parser.parse_args()
 
     print(f"Authenticating with BigQuery ({GCP_PROJECT})…")
@@ -581,6 +623,11 @@ def main():
         except Exception as e:
             print(f"  ⚠ consensus load skipped: {e}")
         print()
+    # always, whatever was loaded: the sandbox deletes tables 60 days after creation
+    try:
+        refresh_expiry(client)
+    except Exception as e:
+        print(f"  ⚠ expiry refresh skipped: {e}")
 
     print("✓ All done.")
     print(f"\nLooker Studio: Add data source → BigQuery → {GCP_PROJECT} → {DATASET}")
