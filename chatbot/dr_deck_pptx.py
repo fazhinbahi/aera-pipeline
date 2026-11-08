@@ -858,7 +858,7 @@ def render_composition_png(comp: Composition, width_in: float, height_in: float,
     bar_in = slot_in * 0.62
 
     def _fits(text: str, size: float) -> bool:
-        return max(len(t) for t in text.split("\n")) * size * 0.62 / 72 <= bar_in
+        return max(len(t) for t in text.split("\n")) * size * 0.7 / 72 <= bar_in   # bold digits ≈ 0.7em
 
     for i, (bar, lab, col) in enumerate(zip(bars, labels, colors)):
         top = bar.get_y() + bar.get_height()
