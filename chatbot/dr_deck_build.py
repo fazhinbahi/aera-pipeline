@@ -82,14 +82,13 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
                 log(f"{name}: RTDs demand plan from the Aera screen")
             else:
                 log(f"{name}: no RTDs rows on the Aera screen — RTDs slide carries a note instead of the table")
+            # bridges and split waterfalls: this year and next year of each dimension,
+            # stacked on one slide (Faizan, 8 Nov 2026)
             bridges = []
-            if is_region:
-                bridges.append(bridge_from_fa(fa, "country", cycle))
-            bridges.append(bridge_from_fa(fa, "category", cycle))
-            # split waterfalls: FY Adj. Forecast total → the parts that hold it
-            if is_region:
-                comps.append(composition_from_fa(fa, "country", cycle))
-            comps.append(composition_from_fa(fa, "category", cycle))
+            for dim in (["country", "category"] if is_region else ["category"]):
+                for ny in (False, True):
+                    bridges.append(bridge_from_fa(fa, dim, cycle, next_year=ny))
+                    comps.append(composition_from_fa(fa, dim, cycle, next_year=ny))
         else:
             # Fallback: report tables + month-start snapshots
             snap, why = pick_baseline(sub_segment, cs, cycle, baseline)

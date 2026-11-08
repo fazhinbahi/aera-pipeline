@@ -634,12 +634,14 @@ def render_bridge_png(bridge: Bridge, width_in: float, height_in: float, dpi: in
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     ax.spines["bottom"].set_color("#BFBFBF")
-    ax.set_title(bridge.title, fontsize=15 if width_in >= 9 else 12, color="#333333", pad=12)
+    title_pt = 15 if (width_in >= 9 and height_in >= 4) else 12
+    ax.set_title(bridge.title, fontsize=title_pt, color="#333333", pad=8)
     ytick_in = len(f"{y1:,.0f}") * small * 0.6 / 72 + 0.25         # widest y label + padding
     lines = max(c.count("\n") + 1 for c in cats)
     longest_in = max(len(c) for c in raw_cats) * char_in
     xlab_in = (longest_in * 0.5 + 0.2 if rot else 0.25 * lines) + 0.15   # sin(30°) of the label length
-    fig.subplots_adjust(left=min(0.2, ytick_in / width_in), right=0.985, top=0.9,
+    fig.subplots_adjust(left=min(0.2, ytick_in / width_in), right=0.985,
+                        top=1 - (title_pt * 1.3 / 72 + 0.2) / height_in,   # room for the title at any height
                         bottom=min(0.4, xlab_in / height_in))
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi, facecolor="white")
@@ -657,22 +659,53 @@ def add_bridge_slide(prs: Presentation, section: Section, as_image: bool = BRIDG
                  MARGIN_L, 1.4, 12, 0.5, size=11)
         return [slide]
     slides = []
-    for b in bridges:
+    for group in _stack_by_dim(bridges):
+        b = group[0]
         suffix = b.title.split("–")[-1].strip() if "–" in b.title else ""
         slide = _content_slide(prs, f"MoM Bridge _ {section.name}" + (f" – {suffix}" if suffix else ""),
                                section.figures_note)
         if as_image:
-            png = render_bridge_png(b, CONTENT_W, 5.45)
-            slide.shapes.add_picture(io.BytesIO(png), Inches(MARGIN_L), Inches(0.95),
-                                     Inches(CONTENT_W), Inches(5.45))
+            _stack_pictures(slide, [render_bridge_png(x, CONTENT_W, h) for x, h in zip(group, _stack_heights(len(group)))])
         else:
             add_bridge_chart(slide, b, MARGIN_L, 0.95, CONTENT_W, 5.45)
-        note = b.note + " Green = increase, orange = decrease vs the previous cycle."
+        years = " and ".join(str(x.year) for x in group if x.year)
+        note = (b.note.replace(f"{b.year} full year", f"{years} full year") if years else b.note) + \
+            " Green = increase, orange = decrease vs the previous cycle."
         if section.baseline_note:
             note += " " + section.baseline_note
         _footnote(slide, note)
         slides.append(slide)
     return slides
+
+
+CHART_TOP, CHART_BOTTOM, CHART_GAP = 0.92, FOOTER_TOP - 0.46, 0.08
+
+
+def _stack_by_dim(charts: list) -> list[list]:
+    """Group charts of the same dimension (country / category) in input order, so
+    the current-year and next-year versions share one slide, current year on top."""
+    groups: list[list] = []
+    for c in charts:
+        key = getattr(c, "dim", "") or c.title
+        for g in groups:
+            if (getattr(g[0], "dim", "") or g[0].title) == key:
+                g.append(c)
+                break
+        else:
+            groups.append([c])
+    return [sorted(g, key=lambda x: getattr(x, "year", 0)) for g in groups]
+
+
+def _stack_heights(n: int) -> list[float]:
+    avail = CHART_BOTTOM - CHART_TOP - CHART_GAP * (n - 1)
+    return [avail / n] * n
+
+
+def _stack_pictures(slide, pngs: list[bytes]):
+    top = CHART_TOP
+    for png, h in zip(pngs, _stack_heights(len(pngs))):
+        slide.shapes.add_picture(io.BytesIO(png), Inches(MARGIN_L), Inches(top), Inches(CONTENT_W), Inches(h))
+        top += h + CHART_GAP
 
 
 def _tile(slide, left, top, width, height, big: str, caption: str, *, fill=None, color=INK):
@@ -852,12 +885,14 @@ def render_composition_png(comp: Composition, width_in: float, height_in: float,
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     ax.spines["bottom"].set_color("#BFBFBF")
-    ax.set_title(comp.title, fontsize=15 if width_in >= 9 else 12, color="#333333", pad=12)
+    title_pt = 15 if (width_in >= 9 and height_in >= 4) else 12
+    ax.set_title(comp.title, fontsize=title_pt, color="#333333", pad=8)
     ytick_in = len(f"{y1:,.0f}") * small * 0.6 / 72 + 0.25
     lines = max(c.count("\n") + 1 for c in cats)
     longest_in = max(len(c) for c in raw_cats) * char_in
     xlab_in = (longest_in * 0.5 + 0.2 if rot else 0.25 * lines) + 0.15
-    fig.subplots_adjust(left=min(0.2, ytick_in / width_in), right=0.985, top=0.9,
+    fig.subplots_adjust(left=min(0.2, ytick_in / width_in), right=0.985,
+                        top=1 - (title_pt * 1.3 / 72 + 0.2) / height_in,
                         bottom=min(0.4, xlab_in / height_in))
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi, facecolor="white")
@@ -868,13 +903,15 @@ def render_composition_png(comp: Composition, width_in: float, height_in: float,
 def add_composition_slides(prs: Presentation, section: Section):
     """One slide per split waterfall (Adj. Forecast FY total → categories / countries)."""
     slides = []
-    for comp in [c for c in section.compositions if c is not None]:
+    for group in _stack_by_dim([c for c in section.compositions if c is not None]):
+        comp = group[0]
         suffix = comp.title.split("–")[-1].strip() if "–" in comp.title else ""
         slide = _content_slide(prs, f"Adj. Forecast Split _ {section.name}" + (f" – {suffix}" if suffix else ""),
                                section.figures_note)
-        png = render_composition_png(comp, CONTENT_W, 5.45)
-        slide.shapes.add_picture(io.BytesIO(png), Inches(MARGIN_L), Inches(0.95), Inches(CONTENT_W), Inches(5.45))
-        _footnote(slide, comp.note + " Labels show the amount and its share of the total.")
+        _stack_pictures(slide, [render_composition_png(x, CONTENT_W, h) for x, h in zip(group, _stack_heights(len(group)))])
+        years = " and ".join(str(x.year) for x in group if x.year)
+        note = comp.note.replace(f"{comp.year} full year", f"{years} full year") if years else comp.note
+        _footnote(slide, note + " Labels show the amount and its share of the total.")
         slides.append(slide)
     return slides
 

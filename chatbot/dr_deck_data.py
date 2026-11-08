@@ -491,6 +491,8 @@ class FaScope:
     fetch_date: datetime.date
     n_countries: int
     totals: dict = field(default_factory=dict)   # key -> {YTD, YTG, CURRENT_YEAR_TOTAL, NEXT_YEAR_TOTAL}
+    by_country_ny: dict = field(default_factory=dict)    # country -> {key: next-year total}
+    by_category_ny: dict = field(default_factory=dict)   # category -> {key: next-year total}
 
 
 def fetch_fa_rows(sub_segment: str, countries: list[str], all_countries: list[str],
@@ -545,20 +547,25 @@ def fetch_fa_rows(sub_segment: str, countries: list[str], all_countries: list[st
                        for p in ("YTD", "YTG", "CURRENT_YEAR_TOTAL", "NEXT_YEAR_TOTAL")}
         cy_total[key] = totals[key]["CURRENT_YEAR_TOTAL"]
 
-    def _totals(rows: pd.DataFrame) -> dict:
-        t = rows[rows["Period"] == "CURRENT_YEAR_TOTAL"]
+    def _totals(rows: pd.DataFrame, period: str = "CURRENT_YEAR_TOTAL") -> dict:
+        t = rows[rows["Period"] == period]
         return {FA_LINE[l]: float(t[t["Line"] == l]["Value"].sum()) for l in FA_LINE}
 
-    by_country = {c: _totals(_rows(c, category)) for c in countries
-                  if not _rows(c, category).empty}
+    by_country, by_country_ny = {}, {}
+    for c in countries:
+        rows = _rows(c, category)
+        if not rows.empty:
+            by_country[c] = _totals(rows)
+            by_country_ny[c] = _totals(rows, "NEXT_YEAR_TOTAL")
     cats = sorted({c for c in df["Category"].unique() if c}) if not category else []
-    by_category = {}
+    by_category, by_category_ny = {}, {}
     for cat in cats:
         rows = _rows("", cat) if whole else _rows(list(countries), cat)
         if not rows.empty:
             by_category[cat] = _totals(rows)
+            by_category_ny[cat] = _totals(rows, "NEXT_YEAR_TOTAL")
     return FaScope(monthly, cy_total, by_country, by_category, closed_through, year, fetch_date,
-                   len(countries), totals)
+                   len(countries), totals, by_country_ny, by_category_ny)
 
 
 def demand_plan_from_fa(fa: FaScope, cycle: Cycle, sub_segment: str, category: str = "") -> DemandPlan:
@@ -638,17 +645,24 @@ def demand_plan_from_fa(fa: FaScope, cycle: Cycle, sub_segment: str, category: s
     return DemandPlan(tbl, [ROW_VSBUD, ROW_VSLY], highlights, notes)
 
 
-def bridge_from_fa(fa: FaScope, dim: str, cycle: Cycle, max_steps: Optional[int] = None) -> "Optional[Bridge]":
+def bridge_from_fa(fa: FaScope, dim: str, cycle: Cycle, max_steps: Optional[int] = None,
+                   next_year: bool = False) -> "Optional[Bridge]":
     """Fcst N-1 (Previous Month Consensus) -> steps -> Forecast N (Adj. FC),
-    both the screen's current-year totals; the balance that the shown steps
-    do not explain (unfiltered or 'Not Set' rows) is the last step."""
-    y = cycle.year
-    parts = fa.by_country if dim == "country" else fa.by_category
-    if not parts:
+    both the screen's full-year totals (current year, or next year when
+    `next_year`); the balance that the shown steps do not explain (unfiltered
+    or 'Not Set' rows) is the last step."""
+    y = cycle.next_year if next_year else cycle.year
+    if next_year:
+        parts = fa.by_country_ny if dim == "country" else fa.by_category_ny
+        start = fa.totals.get("pmcf", {}).get("NEXT_YEAR_TOTAL", 0.0)
+        end = fa.totals.get("adjfc", {}).get("NEXT_YEAR_TOTAL", 0.0)
+    else:
+        parts = fa.by_country if dim == "country" else fa.by_category
+        start, end = fa.cy_total["pmcf"], fa.cy_total["adjfc"]
+    if not parts or (abs(start) < 0.5 and abs(end) < 0.5):
         return None
     if max_steps is None:
         max_steps = 8 if dim == "country" else 12
-    start, end = fa.cy_total["pmcf"], fa.cy_total["adjfc"]
     deltas = sorted(((d, v["adjfc"] - v["pmcf"]) for d, v in parts.items()
                      if abs(v["adjfc"]) + abs(v["pmcf"]) >= 0.5 and d != "Not Set"),
                     key=lambda t: -abs(t[1]))
@@ -663,7 +677,8 @@ def bridge_from_fa(fa: FaScope, dim: str, cycle: Cycle, max_steps: Optional[int]
     dim_label = "by Country" if dim == "country" else "by Category"
     note = (f"Fcst N-1 = Previous Month Consensus Forecast and Forecast N = Adj. Forecast, {y} full year, "
             f"from the Aera Forecast Adjustments screen (fetched {fa.fetch_date:%d %b %Y}).")
-    return Bridge(f"Bridge {y} FY Month on Month – {dim_label}", "Fcst N-1", start, steps, "Forecast N", end, note)
+    return Bridge(f"Bridge {y} FY Month on Month – {dim_label}", "Fcst N-1", start, steps, "Forecast N", end, note,
+                  dim=dim, year=y)
 
 
 # ── 1b. Month-on-month bridge (waterfall, snapshot fallback) ──────────────────
@@ -676,6 +691,8 @@ class Bridge:
     end_label: str
     end: float
     note: str
+    dim: str = ""                         # 'country' | 'category' — the slide stacks the years of one dim
+    year: int = 0
 
 
 @dataclass
@@ -686,17 +703,25 @@ class Composition:
     total: float
     parts: list[tuple[str, float]]        # (label, value) largest first; 'Other / Not Set' last
     note: str
+    dim: str = ""
+    year: int = 0
 
 
-def composition_from_fa(fa: FaScope, dim: str, cycle: Cycle, key: str = "adjfc") -> "Optional[Composition]":
+def composition_from_fa(fa: FaScope, dim: str, cycle: Cycle, key: str = "adjfc",
+                        next_year: bool = False) -> "Optional[Composition]":
     """Faizan, 8 Nov 2026: after the MoM bridge, a waterfall whose first bar is the
     current Adj. Forecast full-year total and whose following bars are the amount
     each category (or country) holds, so they add back to the total. Values are
     the screen's CURRENT_YEAR_TOTAL for the Adj. Forecast line; rows the screen
     does not attribute to a category end up in 'Other / Not Set'."""
-    y = cycle.year
-    parts_src = fa.by_country if dim == "country" else fa.by_category
-    total = float(fa.cy_total.get(key, 0.0))
+    if next_year:
+        y = cycle.next_year
+        parts_src = fa.by_country_ny if dim == "country" else fa.by_category_ny
+        total = float(fa.totals.get(key, {}).get("NEXT_YEAR_TOTAL", 0.0))
+    else:
+        y = cycle.year
+        parts_src = fa.by_country if dim == "country" else fa.by_category
+        total = float(fa.cy_total.get(key, 0.0))
     if not parts_src or abs(total) < 0.5:
         return None
     parts = sorted(((name, float(v.get(key, 0.0))) for name, v in parts_src.items()),
@@ -712,6 +737,7 @@ def composition_from_fa(fa: FaScope, dim: str, cycle: Cycle, key: str = "adjfc")
         note=(f"Forecast N = Adj. Forecast {y} full year from the Aera Forecast Adjustments screen "
               f"(fetched {fa.fetch_date:%d %b %Y}); each bar is the forecast that {what.lower()} holds, "
               f"so the bars add up to the total."),
+        dim=dim, year=y,
     )
 
 
