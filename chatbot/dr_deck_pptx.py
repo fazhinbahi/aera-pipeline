@@ -759,7 +759,7 @@ def add_accuracy_slide(prs: Presentation, section: Section, acc: Optional[object
     wm, bi = last["wmape"], last["bias"]
     wm_txt = "n/a" if pd.isna(wm) else f"{wm:.1%}"
     bi_txt = "n/a" if pd.isna(bi) else f"{bi:+.1%}"
-    fa_txt = "" if pd.isna(wm) else f"FA {1 - wm:.1%} · "
+    fa_txt = "" if pd.isna(wm) else f"FA {max(0.0, 1 - wm):.1%} · "     # accuracy floors at 0 when WMAPE > 100 %
     tiles = [
         (wm_txt, f"WMAPE · {mon} · {fa_txt}Σ|F−A| = {last['abs_err']:,.0f} ÷ ΣA", TEAL, WHITE),
         (bi_txt, f"BIAS · {mon} · " + ("under-forecast" if (0 if pd.isna(bi) else bi) < 0 else "over-forecast"),
