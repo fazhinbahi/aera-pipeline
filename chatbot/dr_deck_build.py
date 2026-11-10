@@ -107,15 +107,17 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
         log(f"{name}: N-3 drivers")
         drv = fetch_n3_drivers(sub_segment, cs, chain_successors)
         log(f"{name}: forecast accuracy (monthly WMAPE / BIAS)")
-        acc = rca = None
+        acc = acc_rtd = rca = None
         try:
             from dr_deck_accuracy import fetch_accuracy_series, fetch_rca_drivers
             acc = fetch_accuracy_series(sub_segment, cs)
+            acc_rtd = fetch_accuracy_series(sub_segment, cs, category="RTDS")
+            log(f"{name}: RTD accuracy series " + ("built" if acc_rtd is not None else "— no RTD units in the file"))
             rca = fetch_rca_drivers(sub_segment, cs)
         except Exception as e:              # the datos_reducidos tables are optional
             log(f"{name}: accuracy series unavailable ({e})")
         sections.append(Section(name=name, demand_plan=dp, demand_plan_rtd=dp_rtd, npd=npd, drivers=drv,
-                                bridges=bridges, compositions=comps, accuracy=acc, rca=rca,
+                                bridges=bridges, compositions=comps, accuracy=acc, accuracy_rtd=acc_rtd, rca=rca,
                                 baseline_note=why, cycle=cycle))
     return sections
 
@@ -174,10 +176,12 @@ def build_xlsx(sections: list[Section]) -> bytes:
                 s.drivers.table.round(2).to_excel(xw, sheet_name=_sheet(f"{stem} N-3"), index=False)
             if s.rca is not None and not s.rca.table.empty:
                 s.rca.table.round(2).to_excel(xw, sheet_name=_sheet(f"{stem} RCA"), index=False)
-            if s.accuracy is not None:
-                t = s.accuracy.table.drop(columns=["label"]).copy()
+            for acc, tag in ((s.accuracy, "accuracy"), (s.accuracy_rtd, "accuracy RTD")):
+                if acc is None:
+                    continue
+                t = acc.table.drop(columns=["label"]).copy()
                 t["wmape"] = t["wmape"].round(4); t["bias"] = t["bias"].round(4)
-                t.round(1).to_excel(xw, sheet_name=_sheet(f"{stem} accuracy"), index=False)
+                t.round(1).to_excel(xw, sheet_name=_sheet(f"{stem} {tag}"), index=False)
     return buf.getvalue()
 
 

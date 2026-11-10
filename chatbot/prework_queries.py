@@ -41,7 +41,13 @@ def _client() -> bigquery.Client:
     but is cached the same way for consistency.
     """
     global _CLIENT, _CLIENT_BORN
+    import socket
     import time
+    # 10 Nov 2026: a deck build hung for 50 min inside an SSL read of a BigQuery
+    # response that never came (no library timeout on that path). With a default
+    # socket timeout the stalled read raises instead, and the caller can retry.
+    if socket.getdefaulttimeout() is None:
+        socket.setdefaulttimeout(180)
     if _CLIENT is not None and time.time() - _CLIENT_BORN < _CLIENT_TTL_S:
         return _CLIENT
     sa_json = os.getenv("GCP_SA_JSON")

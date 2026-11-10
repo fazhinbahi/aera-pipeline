@@ -81,6 +81,7 @@ class Section:
     bridges: list = field(default_factory=list)   # Bridge objects, in display order
     compositions: list = field(default_factory=list)   # Composition objects: total → parts waterfalls
     accuracy: Optional[object] = None             # AccuracySeries (dr_deck_accuracy) – monthly WMAPE / BIAS
+    accuracy_rtd: Optional[object] = None         # same, RTDS units only (second accuracy slide)
     rca: Optional[object] = None                  # RcaDrivers (dr_deck_accuracy) – top-10 offenders, replaces drivers when present
     baseline_note: str = ""                       # why a different snapshot was used, if so
     cycle: Optional[object] = None                # Cycle the section was built on
@@ -732,17 +733,20 @@ def _tile(slide, left, top, width, height, big: str, caption: str, *, fill=None,
     return shp
 
 
-def add_accuracy_slide(prs: Presentation, section: Section):
+def add_accuracy_slide(prs: Presentation, section: Section, acc: Optional[object] = None, label: str = ""):
     """Enrique's 'Monthly WMAPE and BIAS' dashboard for the section's scope:
-    KPI tiles (pooled WMAPE, bias, best / worst month, window volumes) over the
-    two-panel chart, each point one closed month measured at N-3."""
+    KPI tiles for the last closed month over the two-panel chart, each point one
+    closed month measured at N-3. `acc` defaults to the whole-scope series; the
+    RTD slide passes section.accuracy_rtd with label 'RTD'."""
     from dr_deck_accuracy import render_accuracy_png
-    acc = section.accuracy
+    acc = acc if acc is not None else (section.accuracy if not label else None)
     lag = acc.lag if acc is not None else 3
-    slide = _content_slide(prs, f"{section.name} KPIs: Forecast accuracy (N-{lag})", None)
+    slide = _content_slide(prs, f"{section.name}{' ' + label if label else ''} KPIs: Forecast accuracy (N-{lag})", None)
     if acc is None or acc.table.empty:
-        _textbox(slide, "No forecast-accuracy series for this scope in the current datos_reducidos export.",
-                 MARGIN_L, 1.4, 12, 0.5, size=11)
+        msg = (f"No {label} products with orders or consensus forecast for this market in the accuracy file "
+               f"(datos_reducidos), so there is no {label} accuracy series to show." if label else
+               "No forecast-accuracy series for this scope in the current datos_reducidos export.")
+        _textbox(slide, msg, MARGIN_L, 1.4, 12, 0.6, size=12, color=MUTED)
         return slide
     pooled = f" · {acc.window} months pooled WMAPE {acc.pooled_wmape:.1%}" if acc.pooled_wmape is not None else ""
     _textbox(slide, f"Monthly WMAPE and BIAS · each point is one closed month measured at N-{lag} "
@@ -1048,6 +1052,7 @@ def build_deck(deck_title: str, sections: list[Section], cycle_label: str, cycle
         if s.npd is not None:
             add_npd_slides(prs, s, cycle_year, next_year)      # one monthly Innovations slide
         add_accuracy_slide(prs, s)
+        add_accuracy_slide(prs, s, acc=s.accuracy_rtd, label="RTD")   # always present, like the RTDs demand plan
         if s.rca is not None and not s.rca.table.empty:
             add_rca_drivers_slide(prs, s)
         else:

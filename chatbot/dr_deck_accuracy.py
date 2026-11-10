@@ -105,9 +105,13 @@ def _act_months() -> list[datetime.date]:
     return sorted(pd.to_datetime(df["month"]).dt.date)
 
 
-def _scope_rows(sub_segment: Optional[str], countries: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _scope_rows(sub_segment: Optional[str], countries: list[str],
+                category: Optional[str] = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """FC and ACT rows of the scope; sub_segment None = every sub-segment of those
-    countries (the dashboard filtered on country alone)."""
+    countries (the dashboard filtered on country alone). `category` (e.g. 'RTDS')
+    keeps only the units the file's DIM rows put in that category — the unit-level
+    row (sub-segment, country, UPC) first, the UPC alone as fallback, exactly the
+    dashboard's Category filter."""
     params = _scope_params(sub_segment or "", countries)
     where = "country IN UNNEST(@countries)" + (" AND sub_segment = @sub_segment" if sub_segment else "")
     fc = _run(f"""
@@ -121,6 +125,19 @@ def _scope_rows(sub_segment: Optional[str], countries: list[str]) -> tuple[pd.Da
     fc["approval_date"] = pd.to_datetime(fc["approval_date"]).dt.date
     fc["consensus"] = pd.to_numeric(fc["consensus"], errors="coerce").fillna(0.0)
     act["actual"] = pd.to_numeric(act["actual"], errors="coerce").fillna(0.0)
+    if category:
+        dim = _run(f"SELECT sub_segment, country, upc, category FROM {_t('datos_reducidos_dim')} WHERE {where}", params)
+        by_unit = {(r.sub_segment, r.country, r.upc): r.category for r in dim.itertuples()}
+        by_upc = {}
+        for r in dim.itertuples():
+            by_upc.setdefault(r.upc, r.category)
+
+        def _keep(df: pd.DataFrame) -> pd.DataFrame:
+            if df.empty:
+                return df
+            cat = [by_unit.get((s, c, u), by_upc.get(u, "")) for s, c, u in zip(df["sub_segment"], df["country"], df["upc"])]
+            return df[[x == category for x in cat]].reset_index(drop=True)
+        fc, act = _keep(fc), _keep(act)
     return fc, act
 
 
@@ -156,9 +173,11 @@ class _Resolver:
 
 
 def fetch_accuracy_series(sub_segment: Optional[str], countries: list[str], lag: int = DEFAULT_LAG,
-                          window: int = DEFAULT_WINDOW, title: Optional[str] = None) -> Optional[AccuracySeries]:
+                          window: int = DEFAULT_WINDOW, title: Optional[str] = None,
+                          category: Optional[str] = None) -> Optional[AccuracySeries]:
     """The dashboard's monthly WMAPE / BIAS series for a scope, or None when the
-    datos_reducidos tables are not loaded or hold nothing for the scope."""
+    datos_reducidos tables are not loaded or hold nothing for the scope.
+    `category` restricts the units to one of the file's categories (e.g. 'RTDS')."""
     try:
         meta = _meta()
     except Exception:
@@ -166,7 +185,7 @@ def fetch_accuracy_series(sub_segment: Optional[str], countries: list[str], lag:
     last_closed = pd.to_datetime(meta["last_closed"] + "-01").date() if meta.get("last_closed") else None
     max_lag = int(meta.get("max_lag", DEFAULT_MAX_LAG) or DEFAULT_MAX_LAG)
     generated = meta.get("generated_at", "")
-    fc, act = _scope_rows(sub_segment, countries)
+    fc, act = _scope_rows(sub_segment, countries, category)
     if fc.empty and act.empty:
         return None
     resolver = _Resolver(_calendar(), _fc_has(), max_lag)
@@ -212,8 +231,9 @@ def fetch_accuracy_series(sub_segment: Optional[str], countries: list[str], lag:
         b, w = valid.loc[valid["wmape"].idxmin()], valid.loc[valid["wmape"].idxmax()]
         best, worst = (b["month"].strftime("%b %Y"), float(b["wmape"])), (w["month"].strftime("%b %Y"), float(w["wmape"]))
     scope = ", ".join(countries) if len(countries) <= 3 else f"{len(countries)} markets"
+    cat_txt = f" · {category} only" if category else ""
     return AccuracySeries(
-        title=title or f"Monthly WMAPE and BIAS – {sub_segment or 'all sub-segments'} {scope} · N-{lag}",
+        title=title or f"Monthly WMAPE and BIAS – {sub_segment or 'all sub-segments'} {scope}{cat_txt} · N-{lag}",
         lag=lag, window=len(table), table=table,
         pooled_wmape=sum_abs / sum_a if sum_a > 0 else None,
         pooled_bias=(sum_f - sum_a) / sum_a if sum_a > 0 else None,
@@ -221,7 +241,9 @@ def fetch_accuracy_series(sub_segment: Optional[str], countries: list[str], lag:
         last_closed=last_closed, generated_at=generated,
         note=(f"Consensus forecast (approved {lag} months before the month, per the cycle calendar) vs sales orders, "
               f"9LC, UPC level; countries of the scope summed before the absolute error. WMAPE = Σ|F−A| ÷ ΣA, "
-              f"BIAS = (ΣF−ΣA) ÷ ΣA. Source: Enrique's datos_reducidos export generated {generated}"
+              f"BIAS = (ΣF−ΣA) ÷ ΣA."
+              + (f" {category} units only, per the file's product categories." if category else "")
+              + f" Source: Enrique's datos_reducidos export generated {generated}"
               + (f", closed through {last_closed:%b %Y}" if last_closed else "") + "."),
         skipped=skipped,
     )

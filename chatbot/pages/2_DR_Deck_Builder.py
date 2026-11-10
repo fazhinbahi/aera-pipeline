@@ -175,9 +175,12 @@ if deck:
                 st.markdown("**NPD tracking**")
                 st.caption(s.npd.note)
                 st.dataframe(s.npd.table, use_container_width=True, hide_index=True)
-            if s.accuracy is not None:
-                a = s.accuracy
-                st.markdown(f"**Forecast accuracy — monthly WMAPE and BIAS (N-{a.lag})**")
+            for a, tag in ((s.accuracy, ""), (s.accuracy_rtd, " · RTDs only")):
+                if a is None:
+                    if tag:
+                        st.caption("No RTD units for this market in the accuracy file — the RTD accuracy slide carries a note.")
+                    continue
+                st.markdown(f"**Forecast accuracy{tag} — monthly WMAPE and BIAS (N-{a.lag})**")
                 k1, k2, k3, k4 = st.columns(4)
                 k1.metric(f"WMAPE · {a.window} months pooled", f"{a.pooled_wmape:.1%}" if a.pooled_wmape is not None else "n/a")
                 k2.metric("BIAS · pooled", f"{a.pooled_bias:+.1%}" if a.pooled_bias is not None else "n/a")
