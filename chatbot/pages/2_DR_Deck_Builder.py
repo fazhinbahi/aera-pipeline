@@ -84,8 +84,14 @@ with st.sidebar:
                                placeholder="All countries…",
                                key=f"dr_countries_{bseg}_{subseg}",
                                disabled=not subseg)
-    per_country = st.checkbox("One section per country", value=True,
+    from dr_deck_build import reviewed_as_whole
+    whole = bool(subseg) and reviewed_as_whole(subseg)
+    per_country = st.checkbox("One section per country", value=not whole, disabled=whole,
+                              key=f"dr_per_country_{subseg}",
                               help="Off: a single section for the selected countries combined.")
+    if whole:
+        st.caption(f"{subseg} is reviewed as a whole: one section for the sub-segment on the screen's "
+                   "total rows (demand plan, RTDs, bridges, NPD, accuracy, drivers), no per-country sections.")
     chain = st.checkbox("Chain retired pack codes (N-3 table)", value=True,
                         help="Pre-work convention: a pack changeover shows as one line "
                              "(needed to reproduce the Power BI Kraken 375ml line). "

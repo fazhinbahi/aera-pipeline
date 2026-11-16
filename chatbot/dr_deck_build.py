@@ -28,6 +28,16 @@ PRETTY_SUB = {
 }
 
 
+# Sub-segments reviewed as ONE scope (Faizan, 16 Nov 2026: "everything for EMEA ENTERP as a
+# whole, not restricted to a country level"): a single section on the screen's sub-segment
+# total rows, no per-country sections, whatever the "One section per country" switch says.
+WHOLE_SUBSEGMENTS = {"EMEA ENTERP"}
+
+
+def reviewed_as_whole(sub_segment: str) -> bool:
+    return sub_segment in WHOLE_SUBSEGMENTS
+
+
 def pretty_sub(sub_segment: str) -> str:
     return PRETTY_SUB.get(sub_segment, sub_segment.title())
 
@@ -55,6 +65,9 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
     bridge and a category bridge; country sections a category bridge."""
     cycle = cycle or Cycle.from_today()
     log = progress or (lambda msg: None)
+    if reviewed_as_whole(sub_segment):
+        per_country = False
+        log(f"{pretty_sub(sub_segment)} is reviewed as a whole: one section, countries summed on the screen's totals")
     scopes: list[tuple[str, list[str], bool]] = []       # (label, countries, is_subsegment_level)
     if len(countries) > 1 or not per_country:
         label = section_name(business_segment, sub_segment, None)
