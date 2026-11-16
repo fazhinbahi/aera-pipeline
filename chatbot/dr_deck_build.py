@@ -2,8 +2,9 @@
 Orchestration for the DR deck builder: scope -> tables -> PPTX bytes.
 
 CLI (local, uses gcloud auth like the pre-work):
+    python3 chatbot/dr_deck_build.py --sub-segment "EMEA DEVELOP" --out /tmp/emea_dev.pptx   # whole sub-segment
     python3 chatbot/dr_deck_build.py --sub-segment "APAC IMC" --countries Australia --out /tmp/au.pptx
-    python3 chatbot/dr_deck_build.py --sub-segment "EMEA DEVELOP" --out /tmp/emea_dev.pptx   # all countries
+    python3 chatbot/dr_deck_build.py --sub-segment "EMEA IMC" --countries Spain Italy --per-country --out /tmp/x.pptx
 """
 import argparse
 import datetime
@@ -28,16 +29,6 @@ PRETTY_SUB = {
 }
 
 
-# Sub-segments reviewed as ONE scope (Faizan, 16 Nov 2026: "everything for EMEA ENTERP as a
-# whole, not restricted to a country level"): a single section on the screen's sub-segment
-# total rows, no per-country sections, whatever the "One section per country" switch says.
-WHOLE_SUBSEGMENTS = {"EMEA ENTERP"}
-
-
-def reviewed_as_whole(sub_segment: str) -> bool:
-    return sub_segment in WHOLE_SUBSEGMENTS
-
-
 def pretty_sub(sub_segment: str) -> str:
     return PRETTY_SUB.get(sub_segment, sub_segment.title())
 
@@ -54,29 +45,53 @@ def deck_title(business_segment: str, sub_segment: str, countries: list[str]) ->
     return pretty_sub(sub_segment)
 
 
+def plan_scopes(business_segment: str, sub_segment: str, countries: list[str],
+                all_countries: list[str], per_country: bool = False) -> list[tuple[str, list[str], bool]]:
+    """Which sections the deck gets: (label, countries, is_subsegment_level).
+
+    Every sub-segment is reviewed as a whole by default (Faizan, 16 Nov 2026):
+    no country filter -> one section on the screen's sub-segment total rows.
+    The country filter is optional and narrows the deck: one combined section
+    for the selected countries (named after the country when only one is
+    picked), plus one section per selected country when `per_country` is on.
+    Sub-segment-level sections get a country bridge and a category bridge;
+    country sections a category bridge."""
+    countries = list(countries) or list(all_countries)
+    whole = set(countries) >= set(all_countries)
+    scopes: list[tuple[str, list[str], bool]] = []
+    if whole:
+        scopes.append((section_name(business_segment, sub_segment, None), countries, True))
+    elif len(countries) == 1:
+        # one country: the country section alone, no "(1 markets)" combined copy
+        return [(section_name(business_segment, sub_segment, countries[0]), countries, False)]
+    else:
+        label = section_name(business_segment, sub_segment, None) + f" ({len(countries)} markets)"
+        scopes.append((label, countries, True))
+    if per_country:
+        for c in countries:
+            scopes.append((section_name(business_segment, sub_segment, c), [c], False))
+    return scopes
+
+
 def build_sections(business_segment: str, sub_segment: str, countries: list[str],
-                   all_countries: list[str], per_country: bool = True,
+                   all_countries: list[str], per_country: bool = False,
                    cycle: Optional[Cycle] = None,
                    progress: Optional[Callable[[str], None]] = None,
                    chain_successors: bool = True,
                    baseline: Optional[datetime.date] = None) -> list[Section]:
-    """One Section per selected country, preceded by a sub-segment total when
-    more than one country is selected. Sub-segment sections get a country
-    bridge and a category bridge; country sections a category bridge."""
+    """Sections as laid out by `plan_scopes`: the whole sub-segment unless
+    countries are selected, then the selected countries combined and, with
+    `per_country`, one section per selected country."""
     cycle = cycle or Cycle.from_today()
     log = progress or (lambda msg: None)
-    if reviewed_as_whole(sub_segment):
-        per_country = False
-        log(f"{pretty_sub(sub_segment)} is reviewed as a whole: one section, countries summed on the screen's totals")
-    scopes: list[tuple[str, list[str], bool]] = []       # (label, countries, is_subsegment_level)
-    if len(countries) > 1 or not per_country:
-        label = section_name(business_segment, sub_segment, None)
-        if len(countries) != len(all_countries):
-            label += f" ({len(countries)} markets)"
-        scopes.append((label, list(countries), True))
-    if per_country:
-        for c in countries:
-            scopes.append((section_name(business_segment, sub_segment, c), [c], False))
+    scopes = plan_scopes(business_segment, sub_segment, countries, all_countries, per_country)
+    if not countries or set(countries) >= set(all_countries):
+        log(f"{pretty_sub(sub_segment)} reviewed as a whole: one section on the screen's sub-segment total rows")
+    elif len(scopes) == 1:
+        log(f"{pretty_sub(sub_segment)} narrowed to {', '.join(scopes[0][1])}: one section")
+    else:
+        log(f"{pretty_sub(sub_segment)} narrowed to {len(countries)} market(s): "
+            f"{len(scopes)} sections (combined, then one per country)")
 
     sections: list[Section] = []
     for name, cs, is_region in scopes:
@@ -136,11 +151,13 @@ def build_sections(business_segment: str, sub_segment: str, countries: list[str]
 
 
 def build(business_segment: str, sub_segment: str, countries: list[str], all_countries: list[str],
-          per_country: bool = True, cycle: Optional[Cycle] = None,
+          per_country: bool = False, cycle: Optional[Cycle] = None,
           progress: Optional[Callable[[str], None]] = None,
           chain_successors: bool = True,
           baseline: Optional[datetime.date] = None) -> tuple[bytes, list[Section]]:
+    """`countries` empty = the whole sub-segment (every country, screen totals)."""
     cycle = cycle or Cycle.from_today()
+    countries = list(countries) or list(all_countries)
     sections = build_sections(business_segment, sub_segment, countries, all_countries,
                               per_country, cycle, progress, chain_successors, baseline)
     if sections and sections[0].cycle is not None:
@@ -201,8 +218,13 @@ def build_xlsx(sections: list[Section]) -> bytes:
 def main():
     ap = argparse.ArgumentParser(description="Build a DR deck from BigQuery")
     ap.add_argument("--sub-segment", required=True)
-    ap.add_argument("--countries", nargs="*", default=None, help="default: every country in the sub-segment")
-    ap.add_argument("--no-per-country", action="store_true")
+    ap.add_argument("--business-segment", default=None,
+                    help="IMC / 3PD / GTR; default: the one named in the sub-segment, else the one "
+                         "with most countries (a sub-segment can sit under several)")
+    ap.add_argument("--countries", nargs="*", default=None,
+                    help="optional filter; default: the whole sub-segment on the screen's total rows")
+    ap.add_argument("--per-country", action="store_true",
+                    help="with --countries: add one section per selected country after the combined one")
     ap.add_argument("--no-chain", action="store_true",
                     help="raw Power BI view in the N-3 table (no successor chaining)")
     ap.add_argument("--baseline", default=None,
@@ -212,14 +234,21 @@ def main():
     baseline = datetime.date.fromisoformat(args.baseline) if args.baseline else None
 
     scope = fetch_scope_map()
-    bseg = next((b for b, subs in scope.items() if args.sub_segment in subs), None)
-    if bseg is None:
+    homes = [b for b, subs in scope.items() if args.sub_segment in subs]
+    if not homes:
         sys.exit(f"sub-segment {args.sub_segment!r} not found; known: "
-                 + ", ".join(s for subs in scope.values() for s in subs))
+                 + ", ".join(sorted({s for subs in scope.values() for s in subs})))
+    if args.business_segment:
+        if args.business_segment not in homes:
+            sys.exit(f"{args.sub_segment!r} is not under {args.business_segment!r}; it is under {homes}")
+        bseg = args.business_segment
+    else:
+        named = [b for b in homes if b in args.sub_segment.split()]
+        bseg = named[0] if named else max(homes, key=lambda b: len(scope[b][args.sub_segment]))
     all_c = scope[bseg][args.sub_segment]
-    countries = args.countries or all_c
+    countries = args.countries or []
     data, sections = build(bseg, args.sub_segment, countries, all_c,
-                           per_country=not args.no_per_country, progress=print,
+                           per_country=args.per_country, progress=print,
                            chain_successors=not args.no_chain, baseline=baseline)
     with open(args.out, "wb") as f:
         f.write(data)

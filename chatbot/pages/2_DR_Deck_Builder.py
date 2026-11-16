@@ -77,21 +77,27 @@ with st.sidebar:
     subseg = st.selectbox("Sub-segment", options=subs, index=None, placeholder="Select…",
                           key="dr_subseg", disabled=not bseg)
     all_countries = scope.get(bseg, {}).get(subseg, []) if (bseg and subseg) else []
-    # Keyed per sub-segment so the widget is recreated (and defaults to every
-    # country) whenever the sub-segment changes; a fixed key would keep the
-    # first, empty selection in session state.
-    countries = st.multiselect("Countries", options=all_countries, default=all_countries,
-                               placeholder="All countries…",
+    # Every sub-segment is reviewed as a whole by default (16 Nov 2026): the
+    # country filter is optional and empty means the whole sub-segment on the
+    # screen's total rows. Keyed per sub-segment so the widget is recreated
+    # (empty again) whenever the sub-segment changes.
+    countries = st.multiselect("Countries (optional filter)", options=all_countries, default=[],
+                               placeholder=f"Whole sub-segment ({len(all_countries)} markets)" if subseg else "Pick a sub-segment first",
                                key=f"dr_countries_{bseg}_{subseg}",
-                               disabled=not subseg)
-    from dr_deck_build import reviewed_as_whole
-    whole = bool(subseg) and reviewed_as_whole(subseg)
-    per_country = st.checkbox("One section per country", value=not whole, disabled=whole,
+                               disabled=not subseg,
+                               help="Leave empty for the whole sub-segment. Pick countries to narrow the deck "
+                                    "to those markets combined.")
+    narrowed = bool(countries) and set(countries) < set(all_countries)
+    per_country = st.checkbox("One section per selected country", value=False, disabled=not countries,
                               key=f"dr_per_country_{subseg}",
-                              help="Off: a single section for the selected countries combined.")
-    if whole:
-        st.caption(f"{subseg} is reviewed as a whole: one section for the sub-segment on the screen's "
-                   "total rows (demand plan, RTDs, bridges, NPD, accuracy, drivers), no per-country sections.")
+                              help="Only with a country filter: after the combined section, one section "
+                                   "per selected country (category bridge, NPD, accuracy, drivers).")
+    if subseg and not countries:
+        st.caption(f"{subseg} as a whole: one section on the screen's sub-segment total rows "
+                   "(demand plan, RTDs, bridges, splits, NPD, accuracy, drivers).")
+    elif narrowed:
+        st.caption(f"Narrowed to {len(countries)} of {len(all_countries)} markets"
+                   + (": one section per country as well." if per_country else " combined."))
     chain = st.checkbox("Chain retired pack codes (N-3 table)", value=True,
                         help="Pre-work convention: a pack changeover shows as one line "
                              "(needed to reproduce the Power BI Kraken 375ml line). "
@@ -99,7 +105,7 @@ with st.sidebar:
     baseline = None      # N-1 comes from Aera's own Previous Month Consensus row (screen fetch);
                          # month-start snapshots are only the fallback when that fetch is missing
     st.divider()
-    go = st.button("Create slide deck", type="primary", disabled=not (bseg and subseg and countries),
+    go = st.button("Create slide deck", type="primary", disabled=not (bseg and subseg),
                    use_container_width=True)
 
 if go:
@@ -117,7 +123,9 @@ if go:
     if sections and sections[0].cycle is not None and sections[0].cycle.first_open != cycle.first_open:
         st.info(f"Built on Aera's cycle: {sections[0].cycle.label}, closed through "
                 f"{sections[0].cycle.last_closed_label} (the screen's shaded months), not today's calendar.")
-    stem = f"DR_{subseg.replace(' ', '_')}_{'_'.join(c.replace(' ', '') for c in countries) if len(countries) <= 3 else 'multi'}_{cycle.first_open:%Y-%m}"
+    scope_tag = "whole" if not countries else (
+        "_".join(c.replace(" ", "") for c in countries) if len(countries) <= 3 else "multi")
+    stem = f"DR_{subseg.replace(' ', '_')}_{scope_tag}_{cycle.first_open:%Y-%m}"
     st.session_state["dr_deck"] = {
         "bytes": data, "sections": sections, "name": f"{stem}.pptx",
         "xlsx": build_xlsx(sections), "xlsx_name": f"{stem}_tables.xlsx",
@@ -215,15 +223,18 @@ if deck:
             else:
                 st.info("No closed-month accuracy data for this scope.")
 else:
-    st.info("Pick a business segment, sub-segment and countries in the sidebar, then click **Create slide deck**.")
+    st.info("Pick a business segment and sub-segment in the sidebar, then click **Create slide deck**. "
+            "The deck covers the whole sub-segment unless you narrow it with the optional country filter.")
     st.markdown(
         "Each section produces:\n"
         "1. **Unconstrained Demand Plan** — the rows of Aera's Forecast Adjustments screen for the scope "
         "(Source FC, Adjusted FC, RR Actuals + Adj FC, Previous Month Consensus, Last Year, Sales Orders, "
-        "Budget, LE) plus the two % rows, as two year blocks, on Aera's own month cycle.\n"
-        "   A second slide repeats the table for the RTDs category where the market has RTD volume.\n"
-        "2. **MoM Bridge** — waterfall from the Previous Month Consensus (N-1) to the Adjusted Forecast (N): "
-        "by country for a sub-segment, by category for a country.\n"
+        "Budget, LE) plus the two % rows, as two year blocks, on Aera's own month cycle; "
+        "the whole sub-segment uses the screen's own total rows.\n"
+        "   A second slide repeats the table for the RTDs category (with a note when the scope has no RTDs).\n"
+        "2. **MoM Bridge** and **Adj. Forecast Split** — waterfalls from the Previous Month Consensus (N-1) to the "
+        "Adjusted Forecast (N) and the split of the Adjusted Forecast, this year over next year: "
+        "by country and by category for a sub-segment, by category for a single country.\n"
         "3. **NPD tracking** — one Innovations slide: launches of the last 12 months and upcoming NMIs, month by month.\n"
         "4. **Forecast accuracy** — monthly WMAPE and BIAS at N-3 (last 18 closed months) with the last month's KPIs, "
         "from Enrique's datos_reducidos export.\n"
