@@ -102,9 +102,9 @@ def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _upload(client: bigquery.Client, df: pd.DataFrame, table_name: str,
-            rename_map: dict | None = None):
+            rename_map: dict | None = None, append: bool = False):
     table_ref = f"{GCP_PROJECT}.{DATASET}.{table_name}"
-    print(f"  Uploading {len(df):,} rows × {df.shape[1]} cols → {table_ref}…")
+    print(f"  {'Appending' if append else 'Uploading'} {len(df):,} rows × {df.shape[1]} cols → {table_ref}…")
 
     df = _clean_df(df)
     df.columns = [_bq_col(c) for c in df.columns]
@@ -114,7 +114,8 @@ def _upload(client: bigquery.Client, df: pd.DataFrame, table_name: str,
         df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
     job_config = bigquery.LoadJobConfig(
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        write_disposition=(bigquery.WriteDisposition.WRITE_APPEND if append
+                           else bigquery.WriteDisposition.WRITE_TRUNCATE),
         autodetect=True,
     )
 
@@ -292,20 +293,23 @@ def load_cycle_snapshot(client: bigquery.Client):
     print(f"  ✓ Cycle snapshot stored: {n:,} rows → adjfc_cycle_snapshots")
 
 
-def load_fa_screen(client: bigquery.Client):
+def load_fa_screen(client: bigquery.Client, path: str | None = None, append: bool = False):
     """Forecast Adjustments screen rows (fetch_fa_screen.py) → fa_screen_rows.
 
     The DR deck's demand-plan table, MoM bridge and month cycle read this
     table, so they show exactly what the screen shows per market.
+    `append` adds a partial re-fetch (fetch_fa_screen.py --subs / --scope) with
+    its newer fetch_date; the deck's query keeps the latest fetch per
+    (sub-segment, country, category) cell, so the other markets stay.
     """
-    path = os.path.join(DIR, "fa_screen_rows.parquet")
+    path = path or os.path.join(DIR, "fa_screen_rows.parquet")
     if not os.path.exists(path):
-        print("  fa_screen_rows.parquet not found — skipped")
+        print(f"  {os.path.basename(path)} not found — skipped")
         return
     df = pd.read_parquet(path)
     df["fetch_date"] = pd.to_datetime(df["fetch_date"]).dt.date
     print(f"Loading {os.path.basename(path)}… {df.shape[0]:,} rows × {df.shape[1]} cols")
-    _upload(client, df, "fa_screen_rows")
+    _upload(client, df, "fa_screen_rows", append=append)
 
 
 def _upload_frame(client: bigquery.Client, df: pd.DataFrame, table_name: str):
@@ -583,6 +587,8 @@ def refresh_expiry(client: bigquery.Client, min_days_left: int = EXPIRY_REFRESH_
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--table", choices=["sply", "adjfc", "oh", "customer", "pmcf", "lag1", "stat", "fa", "consensus", "expiry", "all"], default="all")
+    parser.add_argument("--fa-file", default=None, help="--table fa: parquet to load instead of fa_screen_rows.parquet")
+    parser.add_argument("--append", action="store_true", help="--table fa: append (partial re-fetch) instead of replacing")
     args = parser.parse_args()
 
     print(f"Authenticating with BigQuery ({GCP_PROJECT})…")
@@ -615,7 +621,7 @@ def main():
         load_stat_3pd_forecast(client)
         print()
     if args.table in ("fa", "all"):
-        load_fa_screen(client)
+        load_fa_screen(client, path=args.fa_file, append=args.append)
         print()
     if args.table in ("consensus", "all"):
         try:

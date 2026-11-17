@@ -210,6 +210,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe", action="store_true", help="check filter semantics on Australia, no save")
     ap.add_argument("--scope", nargs=2, metavar=("SUB_SEGMENT", "COUNTRY"), help="one market only")
+    ap.add_argument("--subs", nargs="+", metavar="SUB_SEGMENT",
+                    help="only these sub-segments (their totals, categories and every market with volume)")
     ap.add_argument("--no-categories", action="store_true")
     ap.add_argument("--out", default=OUTPUT)
     args = ap.parse_args()
@@ -238,6 +240,9 @@ def main():
         subs = [sub]
     else:
         pairs, cats = combos_with_volume()
+        if args.subs:
+            pairs = [p for p in pairs if p[0] in set(args.subs)]
+            print(f"  limited to {args.subs}: {len(pairs)} markets")
         subs = sorted({p[0] for p in pairs})
     # sub-segment totals and their category split
     for sub in subs:
