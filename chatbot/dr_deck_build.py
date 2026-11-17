@@ -197,7 +197,7 @@ def build_xlsx(sections: list[Section]) -> bytes:
             for c in s.compositions:
                 what = c.title.split("by ")[-1] if "by " in c.title else "split"
                 rows = [(c.total_label.replace("\n", " "), c.total, 1.0)] + \
-                       [(lbl, v, (v / c.total if c.total else 0.0)) for lbl, v in c.parts]
+                       [(lbl, v, (v / c.total if c.total else 0.0)) for lbl, v in (c.detail or c.parts)]
                 pd.DataFrame(rows, columns=["Part", "Adj FC FY (9LC)", "Share"]).round(3).to_excel(
                     xw, sheet_name=_sheet(f"{stem} split {what}"), index=False)
             if s.npd is not None and not s.npd.table.empty:

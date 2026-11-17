@@ -663,8 +663,8 @@ def add_bridge_slide(prs: Presentation, section: Section, as_image: bool = BRIDG
     for group in _stack_by_dim(bridges):
         b = group[0]
         suffix = b.title.split("–")[-1].strip() if "–" in b.title else ""
-        slide = _content_slide(prs, f"MoM Bridge _ {section.name}" + (f" – {suffix}" if suffix else ""),
-                               section.figures_note)
+        title = f"MoM Bridge _ {section.name}" + (f" – {suffix}" if suffix else "")
+        slide = _content_slide(prs, title, section.figures_note)
         if as_image:
             _stack_pictures(slide, [render_bridge_png(x, CONTENT_W, h) for x, h in zip(group, _stack_heights(len(group)))])
         else:
@@ -674,8 +674,13 @@ def add_bridge_slide(prs: Presentation, section: Section, as_image: bool = BRIDG
             " Green = increase, orange = decrease vs the previous cycle."
         if section.baseline_note:
             note += " " + section.baseline_note
+        capped = any(getattr(x, "detail", None) for x in group)
+        if capped:
+            note += " 'Others' folds the smaller movements; the next slide lists every one."
         _footnote(slide, note)
         slides.append(slide)
+        if capped:
+            slides.append(_bridge_appendix(prs, section, group, slide, title))
     return slides
 
 
@@ -890,7 +895,9 @@ def render_composition_png(comp: Composition, width_in: float, height_in: float,
         ax.spines[side].set_visible(False)
     ax.spines["bottom"].set_color("#BFBFBF")
     title_pt = 15 if (width_in >= 9 and height_in >= 4) else 12
-    ax.set_title(comp.title, fontsize=title_pt, color="#333333", pad=8)
+    # right-aligned: the running level only falls, so the right-hand bars and
+    # their labels are always low and the title never collides with a label
+    ax.set_title(comp.title, fontsize=title_pt, color="#333333", pad=8, loc="right")
     ytick_in = len(f"{y1:,.0f}") * small * 0.6 / 72 + 0.25
     lines = max(c.count("\n") + 1 for c in cats)
     longest_in = max(len(c) for c in raw_cats) * char_in
@@ -904,19 +911,133 @@ def render_composition_png(comp: Composition, width_in: float, height_in: float,
     return buf.getvalue()
 
 
+def _appendix_table_slide(prs: Presentation, title: str, header: list[str], rows: list[list[str]],
+                          col_widths: list[float], figures_note: Optional[str], note: str,
+                          bold_first: bool = False):
+    """The full list behind a chart that folded its small parts: the rows run
+    down two side-by-side tables when there are many, at the largest font
+    that fits above the footer."""
+    slide = _content_slide(prs, title, figures_note)
+    n = len(rows)
+    halves = [rows[: (n + 1) // 2], rows[(n + 1) // 2:]] if n > 18 else [rows]
+    per_table = max(len(h) for h in halves) + 1
+    avail = CHART_BOTTOM - CHART_TOP
+    font = next((f for f in (9.0, 8.5, 8.0, 7.5, 7.0, 6.5, 6.0) if per_table * row_height(f) <= avail), 6.0)
+    gap = 0.35
+    scale = min(1.0, ((CONTENT_W - gap * (len(halves) - 1)) / len(halves)) / sum(col_widths))
+    widths = [w * scale for w in col_widths]
+    left = MARGIN_L
+    for k, chunk in enumerate(halves):
+        tbl = _table(slide, len(chunk) + 1, len(header), left, CHART_TOP, widths, row_height(font))
+        for c, text in enumerate(header):
+            _cell(tbl.cell(0, c), text, size=font, bold=True, color=WHITE, fill=NAVY_TOTAL,
+                  align=PP_ALIGN.LEFT if c == 0 else PP_ALIGN.RIGHT)
+        for r, row in enumerate(chunk, start=1):
+            bold = bold_first and k == 0 and r == 1
+            for c, text in enumerate(row):
+                _cell(tbl.cell(r, c), text, size=font, bold=bold,
+                      align=PP_ALIGN.LEFT if c == 0 else PP_ALIGN.RIGHT,
+                      fill=BLUE_BODY if (r % 2 == 0 and not bold) else None)
+        left += sum(widths) + gap
+    _footnote(slide, note)
+    return slide
+
+
+def _link_pair(chart_slide, appendix_slide, forward_text: str):
+    """Teal pills jumping from the chart to its appendix and back (slide-show
+    hyperlinks; the appendix also follows the chart directly for readers who
+    just page through)."""
+    _link_button(chart_slide, forward_text, 11.3, 0.52, width=1.75, height=0.28).click_action.target_slide = appendix_slide
+    _link_button(appendix_slide, "← Back to chart", 11.3, 0.52, width=1.75, height=0.28).click_action.target_slide = chart_slide
+
+
+def _split_appendix(prs: Presentation, section: Section, group: list, chart_slide, title: str):
+    """Every part of a grouped split waterfall, both years side by side."""
+    comps = [c for c in group if c.year]
+    full: dict = {}
+    for c in comps:
+        for name, v in (c.detail or c.parts):
+            full.setdefault(name, {})[c.year] = v
+    lead = comps[0]
+    order = sorted(full, key=lambda nm: (nm == "Other / Not Set", -abs(full[nm].get(lead.year, 0.0))))
+    is_country = lead.dim == "country"
+    header = ["Country" if is_country else "Category"]
+    for c in comps:
+        header += [f"Adj. FC {c.year} FY", "Share"]
+    rows = [["Forecast N (total)"] + sum([[fmt_int(c.total), "100%"] for c in comps], [])]
+    for name in order:
+        row = [name]
+        for c in comps:
+            v = full[name].get(c.year)
+            row += [fmt_int(v) if v is not None else "–",
+                    f"{v / c.total:.1%}" if (v is not None and c.total) else "–"]
+        rows.append(row)
+    n_parts = len([nm for nm in order if nm != "Other / Not Set"])
+    unit = "markets" if is_country else "categories"
+    widths = [2.1] + [1.05, 0.75] * len(comps)
+    appendix = _appendix_table_slide(
+        prs, f"{title} (all {n_parts} {unit})", header, rows, widths, section.figures_note,
+        f"Every {unit[:-1]} behind the split waterfall, largest first by {lead.year}; "
+        f"the chart shows the {len(lead.parts) - (1 if lead.grouped else 0)} largest and folds the other "
+        f"{lead.grouped} into one bar. Shares are of each year's Forecast N total.",
+        bold_first=True)
+    _link_pair(chart_slide, appendix, f"All {n_parts} {unit} →")
+    return appendix
+
+
+def _bridge_appendix(prs: Presentation, section: Section, group: list, chart_slide, title: str):
+    """Every part of a capped MoM bridge: N-1, N and the change, both years."""
+    bridges = [b for b in group if b.year]
+    full: dict = {}
+    for b in bridges:
+        for name, n1, n, d in (b.detail or []):
+            full.setdefault(name, {})[b.year] = (n1, n, d)
+    lead = bridges[0]
+    order = sorted(full, key=lambda nm: (nm == "Not Set", -abs(full[nm].get(lead.year, (0, 0, 0))[2])))
+    is_country = lead.dim == "country"
+    header = ["Country" if is_country else "Category"]
+    for b in bridges:
+        header += [f"Fcst N-1 {b.year}", f"Forecast N {b.year}", "Change"]
+    rows = [["Total"] + sum([[fmt_int(b.start), fmt_int(b.end), f"{b.end - b.start:+,.0f}"] for b in bridges], [])]
+    for name in order:
+        row = [name]
+        for b in bridges:
+            t = full[name].get(b.year)
+            row += [fmt_int(t[0]), fmt_int(t[1]), f"{t[2]:+,.0f}"] if t else ["–", "–", "–"]
+        rows.append(row)
+    unit = "markets" if is_country else "categories"
+    widths = [1.9] + [0.95, 0.95, 0.85] * len(bridges)
+    appendix = _appendix_table_slide(
+        prs, f"{title} (all {len(order)} {unit})", header, rows, widths, section.figures_note,
+        f"Every {unit[:-1]} behind the bridge, largest change first by {lead.year}; the chart shows the "
+        f"biggest movements and folds the rest into one 'Others' step. Fcst N-1 = Previous Month Consensus, "
+        f"Forecast N = Adj. Forecast, full year.")
+    _link_pair(chart_slide, appendix, f"All {len(order)} {unit} →")
+    return appendix
+
+
 def add_composition_slides(prs: Presentation, section: Section):
-    """One slide per split waterfall (Adj. Forecast FY total → categories / countries)."""
+    """One slide per split waterfall (Adj. Forecast FY total → categories / countries);
+    a chart that folded its small parts is followed by an appendix slide with all of them."""
     slides = []
     for group in _stack_by_dim([c for c in section.compositions if c is not None]):
         comp = group[0]
         suffix = comp.title.split("–")[-1].strip() if "–" in comp.title else ""
-        slide = _content_slide(prs, f"Adj. Forecast Split _ {section.name}" + (f" – {suffix}" if suffix else ""),
-                               section.figures_note)
+        title = f"Adj. Forecast Split _ {section.name}" + (f" – {suffix}" if suffix else "")
+        slide = _content_slide(prs, title, section.figures_note)
         _stack_pictures(slide, [render_composition_png(x, CONTENT_W, h) for x, h in zip(group, _stack_heights(len(group)))])
         years = " and ".join(str(x.year) for x in group if x.year)
         note = comp.note.replace(f"{comp.year} full year", f"{years} full year") if years else comp.note
-        _footnote(slide, note + " Labels show the amount and its share of the total.")
+        note += " Labels show the amount and its share of the total."
+        if any(c.grouped for c in group):
+            unit = "markets" if comp.dim == "country" else "categories"
+            unset = any(nm == "Other / Not Set" for c in group for nm, _ in c.detail)
+            note += (f" The smaller {unit} are one 'Other' bar" + (" (with the rows the screen leaves Not Set)" if unset else "")
+                     + "; the next slide lists every one.")
+        _footnote(slide, note)
         slides.append(slide)
+        if any(c.grouped for c in group):
+            slides.append(_split_appendix(prs, section, group, slide, title))
     return slides
 
 

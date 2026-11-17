@@ -184,7 +184,8 @@ if deck:
                 cdf = pd.DataFrame(rows, columns=["Part", "9LC", "Share"])
                 cdf["9LC"] = cdf["9LC"].map(lambda v: f"{v:,.0f}"); cdf["Share"] = cdf["Share"].map(lambda v: f"{v:.0%}")
                 st.dataframe(cdf, use_container_width=True, hide_index=True)
-                st.caption(c.note)
+                st.caption(c.note + (f" {c.grouped} smaller parts are folded into the 'Other' bar on the slide; "
+                                     "the appendix slide and the Excel split sheet list every one." if c.grouped else ""))
             if s.npd is not None:
                 st.markdown("**NPD tracking**")
                 st.caption(s.npd.note)

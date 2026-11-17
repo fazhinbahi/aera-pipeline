@@ -668,9 +668,15 @@ def bridge_from_fa(fa: FaScope, dim: str, cycle: Cycle, max_steps: Optional[int]
                     key=lambda t: -abs(t[1]))
     steps = deltas[:max_steps]
     rest = deltas[max_steps:]
+    detail: list = []
     if rest:
-        names = ", ".join(d for d, _ in rest[:3]) + (f" +{len(rest) - 3} more" if len(rest) > 3 else "")
-        steps.append((f"Others ({names})", sum(v for _, v in rest)))
+        # the capped steps hide the rest: name the bar by count and keep every
+        # part for the appendix slide the chart links to
+        unit = "markets" if dim == "country" else "categories"
+        steps.append((f"Others ({len(rest)} {unit})", sum(v for _, v in rest)))
+        detail = [(d, float(v["pmcf"]), float(v["adjfc"]), float(v["adjfc"] - v["pmcf"]))
+                  for d, v in sorted(parts.items(), key=lambda kv: -abs(kv[1]["adjfc"] - kv[1]["pmcf"]))
+                  if abs(v["adjfc"]) + abs(v["pmcf"]) >= 0.5]
     balance = (end - start) - sum(v for _, v in steps)
     if abs(balance) >= 5:                      # below that it is month-level rounding
         steps.append(("Others / adjustments (balance)", balance))
@@ -678,7 +684,7 @@ def bridge_from_fa(fa: FaScope, dim: str, cycle: Cycle, max_steps: Optional[int]
     note = (f"Fcst N-1 = Previous Month Consensus Forecast and Forecast N = Adj. Forecast, {y} full year, "
             f"from the Aera Forecast Adjustments screen (fetched {fa.fetch_date:%d %b %Y}).")
     return Bridge(f"Bridge {y} FY Month on Month – {dim_label}", "Fcst N-1", start, steps, "Forecast N", end, note,
-                  dim=dim, year=y)
+                  dim=dim, year=y, detail=detail)
 
 
 # ── 1b. Month-on-month bridge (waterfall, snapshot fallback) ──────────────────
@@ -693,6 +699,7 @@ class Bridge:
     note: str
     dim: str = ""                         # 'country' | 'category' — the slide stacks the years of one dim
     year: int = 0
+    detail: list = field(default_factory=list)   # (label, N-1, N, delta) for every part, when steps were capped
 
 
 @dataclass
@@ -705,6 +712,16 @@ class Composition:
     note: str
     dim: str = ""
     year: int = 0
+    detail: list = field(default_factory=list)   # every part, when the chart folded the small ones
+    grouped: int = 0                              # how many parts sit in the 'Other (...)' bar
+
+
+# Faizan, 17 Nov 2026 (EMEA ENTERP's 37-country split was unreadable): a split
+# waterfall shows at most SPLIT_MAX_BARS parts; beyond that the SPLIT_SHOWN largest
+# stay and the rest become one 'Other (n markets)' bar, with the full list on an
+# appendix slide the chart links to.
+SPLIT_MAX_BARS = 12
+SPLIT_SHOWN = 10
 
 
 def composition_from_fa(fa: FaScope, dim: str, cycle: Cycle, key: str = "adjfc",
@@ -731,13 +748,24 @@ def composition_from_fa(fa: FaScope, dim: str, cycle: Cycle, key: str = "adjfc",
     if abs(rest) >= max(1.0, abs(total) * 0.0005):      # ignore the screen's own rounding
         parts.append(("Other / Not Set", rest))
     what = "Category" if dim == "category" else "Country"
+    detail: list = []
+    grouped = 0
+    if len(parts) > SPLIT_MAX_BARS:
+        detail = list(parts)
+        named = [(n, v) for n, v in parts if n != "Other / Not Set"]
+        unset = [(n, v) for n, v in parts if n == "Other / Not Set"]
+        shown, folded = named[:SPLIT_SHOWN], named[SPLIT_SHOWN:]
+        grouped = len(folded)
+        unit = "markets" if dim == "country" else "categories"
+        # the 'Not Set' remainder rides in the same bar (the appendix lists it on its own)
+        parts = shown + [(f"Other ({grouped} {unit})", sum(v for _, v in folded) + sum(v for _, v in unset))]
     return Composition(
         title=f"Adj. Forecast {y} FY split – by {what}",
         total_label=f"Forecast N\n{y} FY", total=total, parts=parts,
         note=(f"Forecast N = Adj. Forecast {y} full year from the Aera Forecast Adjustments screen "
               f"(fetched {fa.fetch_date:%d %b %Y}); each bar is the forecast that {what.lower()} holds, "
               f"so the bars add up to the total."),
-        dim=dim, year=y,
+        dim=dim, year=y, detail=detail, grouped=grouped,
     )
 
 
