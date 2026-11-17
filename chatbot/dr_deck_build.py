@@ -26,6 +26,7 @@ PRETTY_SUB = {
     "APAC DEVELOP": "APAC Develop", "APAC ENTERP": "APAC Enterprise",
     "EMEA GTR": "GTR EMEA", "US GTR": "GTR US", "APAC GTR": "GTR APAC",
     "APAC IMC": "IMC APAC", "EMEA IMC": "IMC EMEA",
+    "APAC": "APAC",                       # consolidated: APAC DEVELOP + APAC ENTERP (dr_deck_data.CONSOLIDATED)
 }
 
 

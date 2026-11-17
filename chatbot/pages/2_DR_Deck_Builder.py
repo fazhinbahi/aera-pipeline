@@ -92,6 +92,11 @@ with st.sidebar:
                               key=f"dr_per_country_{subseg}",
                               help="Only with a country filter: after the combined section, one section "
                                    "per selected country (category bridge, NPD, accuracy, drivers).")
+    from dr_deck_data import excluded_next_year, is_consolidated, members_of
+    if subseg and is_consolidated(subseg):
+        excl = excluded_next_year(subseg)
+        st.caption(f"{subseg} = {' + '.join(members_of(subseg))}, summed"
+                   + (f"; {cycle.next_year} excludes {', '.join(excl)}." if excl else "."))
     if subseg and not countries:
         st.caption(f"{subseg} as a whole: one section on the screen's sub-segment total rows "
                    "(demand plan, RTDs, bridges, splits, NPD, accuracy, drivers).")

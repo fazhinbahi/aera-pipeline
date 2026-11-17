@@ -113,7 +113,7 @@ def _scope_rows(sub_segment: Optional[str], countries: list[str],
     row (sub-segment, country, UPC) first, the UPC alone as fallback, exactly the
     dashboard's Category filter."""
     params = _scope_params(sub_segment or "", countries)
-    where = "country IN UNNEST(@countries)" + (" AND sub_segment = @sub_segment" if sub_segment else "")
+    where = "country IN UNNEST(@countries)" + (" AND sub_segment IN UNNEST(@sub_segments)" if sub_segment else "")
     fc = _run(f"""
         SELECT approval_date, group_name, sub_segment, country, upc, month, consensus, statistical
         FROM {_t('datos_reducidos_fc')} WHERE {where}""", params)
@@ -426,7 +426,7 @@ def fetch_rca_drivers(sub_segment: Optional[str], countries: list[str], lag: int
     topn = u.sort_values("abs_err", ascending=False).head(top).reset_index(drop=True)
     # attributes: SKU codes and sub-brand / size from the file's SKU and DIM rows
     params = _scope_params(sub_segment or "", countries)
-    where = "country IN UNNEST(@countries)" + (" AND sub_segment = @sub_segment" if sub_segment else "")
+    where = "country IN UNNEST(@countries)" + (" AND sub_segment IN UNNEST(@sub_segments)" if sub_segment else "")
     sku = _run(f"SELECT group_name, sub_segment, country, upc, material FROM {_t('datos_reducidos_sku')} WHERE {where}", params)
     dim = _run(f"SELECT group_name, sub_segment, country, upc, sub_brand, category, size_l FROM {_t('datos_reducidos_dim')} WHERE {where}", params)
     skus = sku.groupby(["sub_segment", "country", "upc"])["material"].apply(list).to_dict()

@@ -132,8 +132,32 @@ def period_columns(cycle: Cycle) -> list[Period]:
 
 
 # ── Scope options for the filters ─────────────────────────────────────────────
+# Consolidated scopes (Faizan, 17 Nov 2026): a virtual sub-segment reviewed like a
+# whole one, summing its members' screen rows (the members' own total rows when
+# every country is in scope). `exclude_next_year` names countries whose rows are
+# taken out of next year's figures only (this year keeps them).
+CONSOLIDATED: dict[str, dict] = {
+    "APAC": {"members": ["APAC DEVELOP", "APAC ENTERP"], "business_segment": "3PD",
+             "exclude_next_year": ["India"]},
+}
+
+
+def is_consolidated(sub_segment: str) -> bool:
+    return sub_segment in CONSOLIDATED
+
+
+def members_of(sub_segment: str) -> list[str]:
+    """The real Aera sub-segments behind a scope name (itself when not consolidated)."""
+    return list(CONSOLIDATED.get(sub_segment, {}).get("members", [sub_segment]))
+
+
+def excluded_next_year(sub_segment: str) -> list[str]:
+    return list(CONSOLIDATED.get(sub_segment, {}).get("exclude_next_year", []))
+
+
 def fetch_scope_map() -> dict[str, dict[str, list[str]]]:
-    """{business_segment: {sub_segment: [countries]}} from customer_analysis.
+    """{business_segment: {sub_segment: [countries]}} from customer_analysis,
+    plus the CONSOLIDATED scopes (their members' countries combined).
 
     'Not Set' segments and countries are dropped: they are mapping gaps, not
     markets anyone reviews.
@@ -151,6 +175,11 @@ def fetch_scope_map() -> dict[str, dict[str, list[str]]]:
     out: dict[str, dict[str, list[str]]] = {}
     for _, r in df.iterrows():
         out.setdefault(r["Business_Segment"], {}).setdefault(r["Sub_Segments"], []).append(r["Country_Name"])
+    for name, cfg in CONSOLIDATED.items():
+        subs = out.setdefault(cfg["business_segment"], {})
+        union = sorted({c for m in cfg["members"] for c in subs.get(m, [])})
+        if union:
+            subs[name] = union
     return out
 
 
@@ -226,10 +255,10 @@ def pick_baseline(sub_segment: str, countries: list[str], cycle: "Cycle",
         return chosen, ""
     like = f"% {cycle.year}"
     params = _scope_params(sub_segment, countries) + [bigquery.ScalarQueryParameter("snap", "DATE", chosen)]
-    cur = _run(f"SELECT SUM(Adjusted_FC) AS v FROM {_t('adjfc_raw')} WHERE Sub_Segments = @sub_segment "
+    cur = _run(f"SELECT SUM(Adjusted_FC) AS v FROM {_t('adjfc_raw')} WHERE Sub_Segments IN UNNEST(@sub_segments) "
                f"AND Country_Name IN UNNEST(@countries) AND Month_Year LIKE '{like}'", params)
     prev = _run(f"SELECT SUM(Adjusted_FC) AS v FROM {_t('adjfc_cycle_snapshots')} WHERE snapshot_month = @snap "
-                f"AND Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries) AND Month_Year LIKE '{like}'",
+                f"AND Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries) AND Month_Year LIKE '{like}'",
                 params)
     a = float(cur["v"].iloc[0] or 0); b = float(prev["v"].iloc[0] or 0)
     if a and abs(a - b) / abs(a) < 0.0005:
@@ -255,9 +284,14 @@ def actualise(series: dict, so_cur: dict, cycle: "Cycle") -> dict:
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
 def _scope_params(sub_segment: str, countries: list[str]) -> list:
+    """Query parameters of a scope: @sub_segments are the real Aera sub-segments
+    (a consolidated scope expands to its members), @countries the selection,
+    @excl_ny the countries left out of next year's figures."""
     return [
         bigquery.ScalarQueryParameter("sub_segment", "STRING", sub_segment),
+        bigquery.ArrayQueryParameter("sub_segments", "STRING", members_of(sub_segment) if sub_segment else []),
         bigquery.ArrayQueryParameter("countries", "STRING", list(countries)),
+        bigquery.ArrayQueryParameter("excl_ny", "STRING", excluded_next_year(sub_segment) if sub_segment else []),
     ]
 
 
@@ -308,7 +342,7 @@ def _wide_sums(table: str, prefix: str, months: list[tuple[int, int]],
             SELECT {sel} FROM (
                 SELECT Material_Number, Country_Name, {inner}
                 FROM {_t(table)}
-                WHERE Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries)
+                WHERE Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries)
                 GROUP BY 1, 2
             )
         """
@@ -317,7 +351,7 @@ def _wide_sums(table: str, prefix: str, months: list[tuple[int, int]],
         q = f"""
             SELECT {sel}
             FROM {_t(table)}
-            WHERE Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries)
+            WHERE Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries)
         """
     df = _run(q, _scope_params(sub_segment, countries))
     if df.empty:
@@ -367,7 +401,7 @@ def fetch_demand_plan(sub_segment: str, countries: list[str],
                SUM(Actuals)        AS rr,
                SUM(Adj_FC_Actuals) AS rr_adj
         FROM {_t('adjfc_raw')}
-        WHERE Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries)
+        WHERE Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries)
         GROUP BY 1
     """, params)
     adjfc  = _monthly_dict(adj, "adjfc")
@@ -377,7 +411,7 @@ def fetch_demand_plan(sub_segment: str, countries: list[str],
     oh = _run(f"""
         SELECT Month_Year, SUM(Order_Qty_9LC) AS so
         FROM {_t('order_history_raw')}
-        WHERE Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries)
+        WHERE Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries)
         GROUP BY 1
     """, params)
     so = _monthly_dict(oh, "so")
@@ -397,7 +431,7 @@ def fetch_demand_plan(sub_segment: str, countries: list[str],
             SELECT Month_Year, SUM(Adjusted_FC) AS adjfc
             FROM {_t('adjfc_cycle_snapshots')}
             WHERE snapshot_month = @snap
-              AND Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries)
+              AND Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries)
             GROUP BY 1
         """, params + [bigquery.ScalarQueryParameter("snap", "DATE", snap_date)])
         m1 = _monthly_dict(snap, "adjfc")
@@ -493,6 +527,8 @@ class FaScope:
     totals: dict = field(default_factory=dict)   # key -> {YTD, YTG, CURRENT_YEAR_TOTAL, NEXT_YEAR_TOTAL}
     by_country_ny: dict = field(default_factory=dict)    # country -> {key: next-year total}
     by_category_ny: dict = field(default_factory=dict)   # category -> {key: next-year total}
+    members: list = field(default_factory=list)          # real sub-segments summed (consolidated scope)
+    excluded_ny: list = field(default_factory=list)      # countries taken out of next year's figures
 
 
 def fetch_fa_rows(sub_segment: str, countries: list[str], all_countries: list[str],
@@ -509,7 +545,7 @@ def fetch_fa_rows(sub_segment: str, countries: list[str], all_countries: list[st
         df = _run(f"""
             SELECT fetch_date, Country_Name, Category, Line, Period, Month_Year, Value
             FROM {_t('fa_screen_rows')}
-            WHERE Sub_Segments = @sub_segment
+            WHERE Sub_Segments IN UNNEST(@sub_segments)
               AND (Country_Name IN UNNEST(@countries) OR Country_Name = '')
             QUALIFY fetch_date = MAX(fetch_date) OVER (PARTITION BY Sub_Segments, Country_Name, Category)
         """, params)
@@ -564,8 +600,32 @@ def fetch_fa_rows(sub_segment: str, countries: list[str], all_countries: list[st
         if not rows.empty:
             by_category[cat] = _totals(rows)
             by_category_ny[cat] = _totals(rows, "NEXT_YEAR_TOTAL")
+    # Countries left out of next year only (CONSOLIDATED exclude_next_year): their
+    # own screen rows come off next year's months, totals and splits; this year
+    # keeps them.
+    excl = [c for c in excluded_next_year(sub_segment) if c in countries]
+    if excl:
+        ny = year + 1
+        ex = _rows(excl, category)
+        for line, key in FA_LINE.items():
+            sub = ex[ex["Line"] == line]
+            for _, r in sub[sub["Month_Year"] != ""].iterrows():
+                d = datetime.datetime.strptime(r["Month_Year"], "%b %Y")
+                if d.year == ny and (d.month, d.year) in monthly[key]:
+                    monthly[key][(d.month, d.year)] -= float(r["Value"])
+            totals[key]["NEXT_YEAR_TOTAL"] -= float(sub[sub["Period"] == "NEXT_YEAR_TOTAL"]["Value"].sum())
+        for c in excl:
+            by_country_ny.pop(c, None)
+        for cat in cats:
+            rows = _rows(excl, cat)
+            if not rows.empty and cat in by_category_ny:
+                t = _totals(rows, "NEXT_YEAR_TOTAL")
+                for k in by_category_ny[cat]:
+                    by_category_ny[cat][k] -= t.get(k, 0.0)
     return FaScope(monthly, cy_total, by_country, by_category, closed_through, year, fetch_date,
-                   len(countries), totals, by_country_ny, by_category_ny)
+                   len(countries), totals, by_country_ny, by_category_ny,
+                   members=members_of(sub_segment) if is_consolidated(sub_segment) else [],
+                   excluded_ny=excl)
 
 
 def demand_plan_from_fa(fa: FaScope, cycle: Cycle, sub_segment: str, category: str = "") -> DemandPlan:
@@ -638,10 +698,13 @@ def demand_plan_from_fa(fa: FaScope, cycle: Cycle, sub_segment: str, category: s
         f"FY {ny} {_sgn(tbl.at[ROW_VSLY, nfy])} vs FY{yy} projection",
     ]
     notes = [f"Source: Aera Forecast Adjustments screen, {sub_segment}"
+             + (f" (= {' + '.join(fa.members)})" if fa.members else "")
              + (f", category {category}" if category else "")
              + f", fetched {fa.fetch_date:%d %b %Y}; closed through {cycle.last_closed:%b %Y}."]
     if fa.n_countries > 1:
         notes.append(f"Sum of {fa.n_countries} countries' screen rows.")
+    if fa.excluded_ny:
+        notes.append(f"{ny} excludes {', '.join(fa.excluded_ny)}; {y} (and the {ny} Last Year base) still includes it.")
     return DemandPlan(tbl, [ROW_VSBUD, ROW_VSLY], highlights, notes)
 
 
@@ -683,6 +746,8 @@ def bridge_from_fa(fa: FaScope, dim: str, cycle: Cycle, max_steps: Optional[int]
     dim_label = "by Country" if dim == "country" else "by Category"
     note = (f"Fcst N-1 = Previous Month Consensus Forecast and Forecast N = Adj. Forecast, {y} full year, "
             f"from the Aera Forecast Adjustments screen (fetched {fa.fetch_date:%d %b %Y}).")
+    if fa.excluded_ny:
+        note += f" {cycle.next_year} excludes {', '.join(fa.excluded_ny)}."
     return Bridge(f"Bridge {y} FY Month on Month – {dim_label}", "Fcst N-1", start, steps, "Forecast N", end, note,
                   dim=dim, year=y, detail=detail)
 
@@ -764,7 +829,8 @@ def composition_from_fa(fa: FaScope, dim: str, cycle: Cycle, key: str = "adjfc",
         total_label=f"Forecast N\n{y} FY", total=total, parts=parts,
         note=(f"Forecast N = Adj. Forecast {y} full year from the Aera Forecast Adjustments screen "
               f"(fetched {fa.fetch_date:%d %b %Y}); each bar is the forecast that {what.lower()} holds, "
-              f"so the bars add up to the total."),
+              f"so the bars add up to the total."
+              + (f" {cycle.next_year} excludes {', '.join(fa.excluded_ny)}." if fa.excluded_ny else "")),
         dim=dim, year=y, detail=detail, grouped=grouped,
     )
 
@@ -797,18 +863,18 @@ def fetch_bridge(sub_segment: str, countries: list[str], dim: str, cycle: Option
 
     cur = _run(f"""
         SELECT {col} AS d, Month_Year, SUM(Adjusted_FC) AS v FROM {_t('adjfc_raw')}
-        WHERE Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries) AND Month_Year LIKE '{like}'
+        WHERE Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries) AND Month_Year LIKE '{like}'
         GROUP BY 1, 2
     """, params)
     prev = _run(f"""
         SELECT {col} AS d, Month_Year, SUM(Adjusted_FC) AS v FROM {_t('adjfc_cycle_snapshots')}
         WHERE snapshot_month = @snap
-          AND Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries) AND Month_Year LIKE '{like}'
+          AND Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries) AND Month_Year LIKE '{like}'
         GROUP BY 1, 2
     """, params)
     oh = _run(f"""
         SELECT {col} AS d, Month_Year, SUM(Order_Qty_9LC) AS v FROM {_t('order_history_raw')}
-        WHERE Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries) AND Month_Year LIKE '{like}'
+        WHERE Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries) AND Month_Year LIKE '{like}'
         GROUP BY 1, 2
     """, params)
 
@@ -889,7 +955,7 @@ def fetch_npd_tracking(sub_segment: str, countries: list[str],
                ANY_VALUE(NULLIF(NULLIF(TRIM(UPC_Code), ''), 'Not Set')) AS upc,
                SUM(Order_Qty_9LC) AS so
         FROM {_t('order_history_raw')}
-        WHERE Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries)
+        WHERE Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries)
         GROUP BY 1, 2
     """, params)
     fc = _run(f"""
@@ -897,7 +963,8 @@ def fetch_npd_tracking(sub_segment: str, countries: list[str],
                ANY_VALUE(Sub_Brand_Long_Description) AS sb, ANY_VALUE(Volume) AS vol,
                SUM(Adjusted_FC) AS adjfc
         FROM {_t('adjfc_raw')}
-        WHERE Sub_Segments = @sub_segment AND Country_Name IN UNNEST(@countries)
+        WHERE Sub_Segments IN UNNEST(@sub_segments) AND Country_Name IN UNNEST(@countries)
+          AND NOT (Country_Name IN UNNEST(@excl_ny) AND Month_Year LIKE '% {int(ny)}')
         GROUP BY 1, 2
     """, params)
 
@@ -1020,12 +1087,13 @@ def fetch_n3_drivers(sub_segment: str, countries: list[str],
     """
     frames = []
     lags = set()
-    for c in countries:
-        acc = fetch_accuracy(c, sub_segment)
-        if acc is None or acc.empty:
-            continue
-        frames.append(acc.assign(_country=c))
-        lags.add(lag_months(c, sub_segment))
+    for ss in members_of(sub_segment):
+        for c in countries:
+            acc = fetch_accuracy(c, ss)
+            if acc is None or acc.empty:
+                continue
+            frames.append(acc.assign(_country=f"{c} ({ss})" if is_consolidated(sub_segment) else c))
+            lags.add(lag_months(c, ss))
     if not frames:
         return None
     acc = pd.concat(frames, ignore_index=True)
