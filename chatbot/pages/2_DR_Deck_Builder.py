@@ -30,7 +30,10 @@ MIME_PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presen
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _scope_map():
+def _scope_map(consolidated: tuple):
+    # `consolidated` (the CONSOLIDATED scope names) is part of the cache key, so
+    # adding a virtual sub-segment such as APAC shows up at once instead of
+    # after the hour-long cache expiry.
     return fetch_scope_map()
 
 
@@ -63,8 +66,9 @@ fresh = _freshness()
 if fresh:
     st.caption(f"Aera report data in BigQuery as of **{fresh:%d %b %Y %H:%M}**.")
 
+from dr_deck_data import CONSOLIDATED
 try:
-    scope = _scope_map()
+    scope = _scope_map(tuple(sorted(CONSOLIDATED)))
 except Exception as e:
     st.error(f"Could not load the market list from BigQuery: {e}")
     st.stop()
